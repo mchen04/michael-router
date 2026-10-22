@@ -293,7 +293,7 @@ test('a provider redirect is never followed: 502, and neither the key nor the pr
   }
 });
 
-test('upstream error messages are scrubbed: a provider echoing our key never leaks it (response, event, stream)', async () => {
+test('upstream error messages are scrubbed: a provider echoing our key never leaks it (response, stream); events keep static text', async () => {
   const h = await harness();
   for (const [model, key] of [
     ['claude-fake-echo-auth', ENV_KEYS.ANTHROPIC_API_KEY],
@@ -309,9 +309,9 @@ test('upstream error messages are scrubbed: a provider echoing our key never lea
     assert.match(last.error.message, /\[redacted\]/);
     for (const text of [plain.text, streamed.text]) assert.ok(!text.includes(key) && !text.includes('SENTINEL'), model);
   }
-  const recorded = JSON.stringify(await events(h));
-  assert.match(recorded, /\[redacted\]/);
-  assert.ok(!recorded.includes('SENTINEL'));
+  const recorded = await events(h);
+  assert.equal(recorded.length, 6);
+  assert.ok(!JSON.stringify(recorded).includes('SENTINEL') && !JSON.stringify(recorded).includes('[redacted]'));
 });
 
 test('streaming Claude: translated chunks, [DONE]; usage chunk only with include_usage', async () => {

@@ -64,19 +64,17 @@ test('request log lines contain only allowlisted primitive fields', () => {
   assert.ok(Object.keys(line).every((k) => LOG_FIELDS.includes(k)));
 });
 
-test('exception lines carry only name and scrubbed message', () => {
+test('exception lines carry only the request id and the exception name', () => {
   /** @type {string[]} */
   const lines = [];
   const logger = createLogger({ sink: (l) => lines.push(l), errorSink: (l) => lines.push(l) });
-  const err = new RangeError(`bad sk-ant-api03-SENTINELxyz and ${'q'.repeat(500)}`);
+  const err = new RangeError('bad sk-ant-api03-SENTINELxyz on quoted-request-text');
   err.stack = `stack with ${PASSWORD}`;
-  logger.exception(err, { requestId: 'r2', redact: (s) => scrub(s, [PASSWORD]) });
+  logger.exception(err, { requestId: 'r2' });
   logger.exception({ name: 'weird name with spaces', message: 7 });
   const [a, b] = lines.map((l) => JSON.parse(l));
+  assert.deepEqual(a, { request_id: 'r2', exception: 'RangeError' });
   assert.deepEqual(Object.keys(a), [...EXCEPTION_FIELDS]);
-  assert.equal(a.exception, 'RangeError');
-  assert.equal(a.message.length, 300);
-  assert.ok(!a.message.includes('SENTINEL') && !lines[0].includes(PASSWORD));
-  assert.equal(b.exception, 'Error');
-  assert.equal(b.request_id, null);
+  assert.ok(!lines[0].includes('SENTINEL') && !lines[0].includes('quoted') && !lines[0].includes(PASSWORD));
+  assert.deepEqual(b, { request_id: null, exception: 'Error' });
 });

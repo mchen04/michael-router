@@ -154,10 +154,17 @@ request got a 429, and that the correct password is then refused with `source_bl
 
 ## 5. What is never logged or stored
 
-Nowhere — logs, events, store, responses: request bodies, prompts, completions, request
-headers, the password (correct or guessed), the password hash, provider keys, `ROUTER_SECRET`,
-the store token. The integration test (`test/integration/logging.test.js`) uses sentinel values
-for all of these, the fake providers and two real dev-server processes:
+Logs, events and the store keep allowlisted metadata only (codes, statuses, provider ids, routed
+model names, timings, request ids, failed-login source addresses) and gateway-authored static
+text. They never hold text from a request, a provider or an exception: no request bodies,
+prompts, completions or request headers, no provider error messages (they can quote the prompt),
+no exception messages. No response, log line, event or store value contains the password
+(correct or guessed), the password hash, a provider key, `ROUTER_SECRET` or the store token. The
+only place request or provider text appears is the response to the request that sent it: a
+gateway or provider error message, scrubbed of secrets, goes back to that client.
+
+The integration test (`test/integration/logging.test.js`) uses sentinel values for all of these,
+the fake providers and real dev-server processes:
 
 - one configured with `ROUTER_PASSWORD_HASH` and a fake Upstash runs every kind of request —
   control routes, proxied successes and streams for all three providers, each upstream error
@@ -165,18 +172,23 @@ for all of these, the fake providers and two real dev-server processes:
   received. No sentinel may appear in its stdout, stderr, any response, the event list or a full
   dump of that fake Upstash (ciphertext is expected), and the echoed key must come back as
   `[redacted]`;
+- one configured with `ROUTER_PASSWORD_HASH` and its own fake Upstash sends a marker in the
+  prompt to fake providers whose errors quote it (an HTTP error and an in-stream error for each
+  provider, OpenRouter's 200-with-error body) and in client fields the gateway's own errors
+  quote. The marker must reach the client and must not appear in stdout, stderr, the event list
+  or the store dump;
 - one configured with `ROUTER_PASSWORD` and the in-process memory store (not dumped) runs
   successes, wrong passwords, the echoing provider and the event list. No sentinel may appear in
   its stdout, stderr or any response.
 
 - **Logs** (`src/log.js`): one JSON line per API request with only `request_id, route, method,
   status, provider, model, duration_ms, upstream_ms, store_ms, error_code, cold`; unknown and
-  non-primitive fields are dropped and string values are scrubbed. Unexpected exceptions log a
-  separate line with only `request_id, exception` (the error name) and the scrubbed message
-  (≤ 300 chars) — never stacks.
-- **Events** (`mr:v1:events`, newest 200): `{ts, kind, code, status, provider?, model?,
-  message?, source?, request_id}`; `source` only on auth events; `message` scrubbed, then
-  truncated to 300 chars. Recorded: wrong passwords (auth), gateway errors after successful
+  non-primitive fields are dropped and string values are scrubbed. `model` is logged only once
+  it passed the model-name rule and routed. Unexpected exceptions log a separate line with only
+  `request_id, exception` (the error name) — never the message or the stack.
+- **Events** (`mr:v1:events`, newest 200): `{ts, kind, code, status, upstream_status?, provider?,
+  model?, message, source?, request_id}`; `source` only on auth events; `message` is a fixed
+  gateway sentence chosen by `code` (`src/events.js`), never provider or request text. Recorded: wrong passwords (auth), gateway errors after successful
   authentication, undecryptable key records, and upstream errors (including errors inside a
   stream). Not recorded: requests without credentials and limiter 429s, so an unauthenticated
   flood cannot cost a store write per request or churn the list beyond the per-source failure
@@ -205,8 +217,8 @@ for all of these, the fake providers and two real dev-server processes:
   and the gateway's `user-agent`. Client authorization, cookies, IP and SDK headers are dropped.
   For Claude the body is rebuilt by the adapter; for Gemini and OpenRouter it is forwarded as is.
 - **Upstream error messages are scrubbed** with the same redactor (configured keys plus key-shaped
-  patterns) and truncated before they reach the response or an event, so a provider that echoes
-  the key it received does not leak it. Errors inside a stream are not relayed raw: the gateway
+  patterns) and truncated before they reach the response, so a provider that echoes the key it
+  received does not leak it. They reach only that response, never an event or a log line. Errors inside a stream are not relayed raw: the gateway
   emits one normalized, scrubbed error chunk and ends the stream.
 - **A provider key failure is 502 `provider_auth_failed`, never 401**, so a 401 always means the
   router password and clients do not rotate or re-prompt for the wrong credential.
@@ -263,7 +275,10 @@ for all of these, the fake providers and two real dev-server processes:
 
 The scripts that move secrets into Vercel, check a deployment and scan the repository follow the
 same rules as the gateway: a secret goes from its source to the stdin of the program that needs
-it, and nowhere else. The procedure that uses them is `DEPLOY.md`.
+it, and nowhere else. The procedure that uses them is `DEPLOY.md`. A deployment uploads only the
+`.vercelignore` allowlist (`api/`, `src/`, `public/`, `package.json`, `package-lock.json`,
+`vercel.json`, without secret-shaped names such as `.env*` or `*.hash`), so local secret files in
+a checkout are not uploaded (`DEPLOY.md` step 5).
 
 ### 9.1 Key copy (`copy-keys-to-vercel.mjs`)
 
@@ -276,6 +291,15 @@ it, and nowhere else. The procedure that uses them is `DEPLOY.md`.
   is a source descriptor (keychain service or account, `op://` reference, file path or variable)
   that the scrubber would change, that is, key-shaped text pasted where a name belongs; the error
   does not repeat it.
+- **Pinned project.** The manifest must name the target project (`"project": {"orgId",
+  "projectId"}`, Vercel id shapes only). The plan prints both ids and its digest covers them.
+  Every `vercel` child runs from the repository root with `VERCEL_ORG_ID` and
+  `VERCEL_PROJECT_ID` set to the pinned ids, which the Vercel CLI prefers to any
+  `.vercel/project.json` link; the operator's own values are never passed on. With `--check` or
+  `--yes`, a different `VERCEL_ORG_ID` or `VERCEL_PROJECT_ID` in the operator's environment, or a
+  repository `.vercel/project.json` that links another project (or cannot be parsed), stops the
+  run before any source is read (`STOPPED at project pin: …`, exit 3). A value that is not shaped
+  like a Vercel id is not echoed.
 - **Prohibited locations.** `file` sources must be absolute (`~/` is expanded) and may not lie
   under agent and tool homes (`.hermes`, `.claude`, `.codex`, `.cache` in both `$HOME` and the
   account's home directory from the user database, so a changed `$HOME` does not hide them), temp
@@ -295,8 +319,9 @@ it, and nowhere else. The procedure that uses them is `DEPLOY.md`.
   `vercel env ls` missed an existing variable, Vercel refuses the add and the entry is skipped,
   so the secret is never replaced.
   Child processes get only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_ALL`, `TERM`,
-  `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and
-  `OP_ACCOUNT` (when set), so no unrelated credential in the operator's environment reaches them.
+  `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `OP_ACCOUNT` (when set), plus the pinned
+  `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` for `vercel`, so no unrelated credential in the
+  operator's environment reaches them.
   Their output is never printed: `vercel env ls` is reduced to variable names, and a failing
   child contributes one line, scrubbed of the value and of key-shaped text (`src/redact.js`). The
   script writes no files.
@@ -310,8 +335,8 @@ it, and nowhere else. The procedure that uses them is `DEPLOY.md`.
   `STOPPED at <ENV> (source <type:name>): <reason>` and exit 3; no other source is tried and no
   later entry runs. Before transferring, the script stops if the run would leave both password
   variables in the environment, and after it, it exits 0 only if every manifest name is present.
-- **Reviewable.** Without `--yes` it prints the plan (names and source descriptors, never values)
-  with a SHA-256 digest of its canonical form, and reads nothing; `--check` reads and validates
+- **Reviewable.** Without `--yes` it prints the plan (the project, names and source descriptors,
+  never values) with a SHA-256 digest of its canonical form, and reads nothing; `--check` reads and validates
   every source and transfers nothing.
 - Limits: a value necessarily exists in the script's memory while it is checked and sent, and
   JavaScript strings made from it (for validation, hashing and scrubbing) cannot be zeroed.

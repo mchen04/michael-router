@@ -2,7 +2,10 @@
 // Each fake is a small wrapper in <root>/bin that calls runFake() with its directories baked in:
 // the scripts under test give children an allowlisted environment, so a fake cannot be
 // configured through environment variables. The call log (<root>/log/calls.jsonl) records argv,
-// the SHA-256 and length of stdin and the environment variable *names* — never a value.
+// the working directory, the SHA-256 and length of stdin and the environment variable *names* —
+// never a value. The one exception is the fake `vercel`'s project identifiers (not secrets):
+// VERCEL_ORG_ID/VERCEL_PROJECT_ID as received, and the project the real CLI would use
+// (`target`: that pair when both are set, else the cwd's .vercel/project.json, else null).
 // Fake behavior and source values live in <root>/fake (config.json, captured.json, state.json).
 // Fake `vercel`: `present` names are listed by `env ls`, `hidden` names exist but are not listed;
 // `env add` without --force refuses an existing name, as the real CLI does.
@@ -23,7 +26,8 @@ const SCRATCH = path.join(REPO, 'tmp');
  *   op?: Record<string, FakeSecret>,
  *   vercel?: {present?: string[], hidden?: string[], sensitive?: boolean, refuse?: Record<string, string>, capture?: string[], dropAdds?: boolean},
  * }} FakeConfig
- * @typedef {{tool: string, argv: string[], stdin_sha256: string, stdin_bytes: number, env: string[]}} FakeCall
+ * @typedef {{tool: string, argv: string[], cwd: string, stdin_sha256: string, stdin_bytes: number, env: string[],
+ *   ids?: {orgId: string | null, projectId: string | null}, target?: string | null}} FakeCall
  */
 
 /** A fresh test root under the checkout's gitignored tmp/ directory. @param {string} prefix */
@@ -104,10 +108,17 @@ export async function runFake(tool, stateDir, logDir) {
   const call = {
     tool,
     argv,
+    cwd: process.cwd(),
     stdin_sha256: createHash('sha256').update(input).digest('hex'),
     stdin_bytes: input.length,
     env: Object.keys(process.env).sort(),
   };
+  if (tool === 'vercel') {
+    const ids = { orgId: process.env.VERCEL_ORG_ID ?? null, projectId: process.env.VERCEL_PROJECT_ID ?? null };
+    const link = await readJson(path.join(process.cwd(), '.vercel', 'project.json'), null).catch(() => null);
+    call.ids = ids;
+    call.target = ids.orgId && ids.projectId ? `${ids.orgId}/${ids.projectId}` : link ? `${link.orgId}/${link.projectId}` : null;
+  }
   await appendFile(path.join(logDir, 'calls.jsonl'), `${JSON.stringify(call)}\n`);
   /** @type {FakeConfig} */
   const config = await readJson(path.join(stateDir, 'config.json'), {});

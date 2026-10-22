@@ -12,7 +12,8 @@
 //   midstream-error, midstream-error-done, truncated, slow-first-byte, slow-stream, echo-auth,
 //   invalid-key, expired-key (Gemini's expired-key 400; the others answer as for invalid-key),
 //   hidden-thoughts (Gemini/OpenRouter usage whose total_tokens includes 200 thinking tokens that
-//   completion_tokens leaves out)
+//   completion_tokens leaves out), echo-prompt (an error quoting the last user message: a 400, or
+//   an in-stream error when streaming), echo-prompt-200 (OpenRouter's 200 error body quoting it)
 // Any key is accepted except one containing "revoked" (treated as an invalid key). Key
 // verification (the model-list/key endpoints) also answers a default 4xx/5xx scenario.
 // Test-only routes: GET /__requests (recorded requests: provider, method, path, headers, raw body,
@@ -64,6 +65,14 @@ const HIDDEN_THOUGHT_TOKENS = 200;
 /** @param {number} ms */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The text of the request's last user message (Messages or Chat Completions shape). @param {Record<string, any>} body */
+function lastUserText(body) {
+  const user = (Array.isArray(body.messages) ? body.messages : []).filter((m) => m?.role === 'user').at(-1);
+  const content = user?.content;
+  if (typeof content === 'string') return content;
+  return Array.isArray(content) ? content.map((p) => (typeof p?.text === 'string' ? p.text : '')).join('') : '';
+}
+
 /** @param {unknown} model @returns {string | null} */
 export function scenarioOf(model) {
   const m = typeof model === 'string' ? /(?:^|[-/])fake-([a-z0-9-]+)$/.exec(model) : null;
@@ -97,6 +106,7 @@ function claudeMessages(scenario, body, key) {
   const text = FAKE_TEXT.claude;
   if (!body.stream) {
     if (scenario === 'echo-auth') return claudeError(400, `invalid request for key ${key}`);
+    if (scenario === 'echo-prompt') return claudeError(400, `prompt rejected: ${lastUserText(body)}`);
     /** @type {unknown[]} */
     const content = [{ type: 'thinking', thinking: '', signature: 'sig_fake' }, { type: 'text', text: text.join('') }];
     if (tools) {
@@ -162,6 +172,8 @@ function claudeMessages(scenario, body, key) {
       return { status: 200, headers: sse, frames: [start, ...textBlock.slice(0, 2), midError('Overloaded'), 'data: [DONE]\n\n'] };
     case 'echo-auth':
       return { status: 200, headers: sse, frames: [start, midError(`stream failed for key ${key}`)] };
+    case 'echo-prompt':
+      return { status: 200, headers: sse, frames: [start, midError(`stream failed on: ${lastUserText(body)}`)] };
     case 'truncated':
       return { status: 200, headers: sse, frames: [start, ...textBlock.slice(0, 2)] };
     case 'slow-stream':
@@ -208,8 +220,12 @@ function chatCompletions(provider, scenario, body, key) {
   const tools = scenario === 'ok-tools';
   const text = FAKE_TEXT[provider];
   if (scenario === '200-error') return json(200, { error: { code: 502, message: 'Provider returned error', metadata: { provider_name: 'Fake' } } });
+  if (scenario === 'echo-prompt-200') {
+    return json(200, { error: { code: 502, message: `Provider returned error for: ${lastUserText(body)}`, metadata: { provider_name: 'Fake' } } });
+  }
   if (!body.stream) {
     if (scenario === 'echo-auth') return openAIError(provider, 400, `invalid request for key ${key}`);
+    if (scenario === 'echo-prompt') return openAIError(provider, 400, `prompt rejected: ${lastUserText(body)}`);
     /** @type {Record<string, unknown>} */
     const message = { role: 'assistant', content: text.join('') };
     if (tools) message.tool_calls = [{ id: 'call_fake_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Paris"}' } }];
@@ -269,6 +285,8 @@ function chatCompletions(provider, scenario, body, key) {
       return { status: 200, headers: sse, frames: [...head, role, content[0], midError('Upstream provider error'), frame('[DONE]')] };
     case 'echo-auth':
       return { status: 200, headers: sse, frames: [...head, role, midError(`stream failed for key ${key}`)] };
+    case 'echo-prompt':
+      return { status: 200, headers: sse, frames: [...head, role, midError(`stream failed on: ${lastUserText(body)}`)] };
     case 'truncated':
       return { status: 200, headers: sse, frames: [...head, role, content[0]] };
     case 'slow-stream':
@@ -324,7 +342,21 @@ function reply(provider, method, path, headers, body, defaults) {
     const status = Number(scenario);
     return provider === 'claude' ? claudeError(status, `fake ${status} error`) : openAIError(/** @type {any} */ (provider), status, `fake ${status} error`);
   }
-  const known = ['ok', 'ok-tools', 'no-usage', 'hidden-thoughts', '200-error', 'midstream-error', 'midstream-error-done', 'truncated', 'slow-first-byte', 'slow-stream', 'echo-auth'];
+  const known = [
+    'ok',
+    'ok-tools',
+    'no-usage',
+    'hidden-thoughts',
+    '200-error',
+    'midstream-error',
+    'midstream-error-done',
+    'truncated',
+    'slow-first-byte',
+    'slow-stream',
+    'echo-auth',
+    'echo-prompt',
+    'echo-prompt-200',
+  ];
   if (!known.includes(scenario)) return json(400, { error: { message: `unknown fake scenario "${scenario}"` } });
   const r = provider === 'claude' ? claudeMessages(scenario, body, key) : chatCompletions(/** @type {any} */ (provider), scenario, body, key);
   if (scenario === 'slow-first-byte') r.firstByteMs = SLOW_FIRST_BYTE_MS;

@@ -147,9 +147,10 @@
 
       <figure class="code">
         <figcaption><span>curl</span><span><code>claude-haiku-4-5</code> → Claude API</span></figcaption>
-<pre tabindex="0"><code>curl \
+<pre tabindex="0"><code>printf 'Authorization: Bearer %s\n' "$MROUTER_PASSWORD" |
+curl \
   <span data-origin>https://&lt;this host&gt;</span>/v1/chat/completions \
-  -H "Authorization: Bearer $MROUTER_PASSWORD" \
+  -H @- \
   -H "content-type: application/json" \
   -d '{"model": "claude-haiku-4-5",
        "messages": [{"role": "user", "content": "Hello"}]}'</code></pre>

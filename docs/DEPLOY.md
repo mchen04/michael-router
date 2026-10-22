@@ -99,7 +99,25 @@ which you pipe it in.
 
 Copy `scripts/key-sources.example.json` to `scripts/key-sources.json` (gitignored), or keep the
 manifest outside the repository, and replace every placeholder with the designated source
-names. Each entry names one variable and exactly one source; entries run in manifest order.
+names and the target project's ids. Each entry names one variable and exactly one source;
+entries run in manifest order.
+
+| Field | Value |
+|-------|-------|
+| `version` | `1` |
+| `environment` | `"production"` |
+| `project` | required: `{"orgId": "team_…", "projectId": "prj_…"}`, the Vercel project that receives the keys; no other keys |
+| `entries` | the variables, in order, each `{"env": <NAME>, "source": {…}}` plus the optional `"transform"` and `"onlyIfAbsent"` |
+
+Read the two ids from the Vercel dashboard (the Project ID in the project's Settings, the Team
+ID in the team's Settings), or from `.vercel/project.json` (`projectId`, `orgId`) after
+`vercel link` (step 2). They are identifiers, not secrets: the plan prints them, and the plan
+digest covers them. A missing or malformed `project` is a usage error (exit 2). Every `vercel`
+command of the script runs from the repository root with `VERCEL_ORG_ID` and
+`VERCEL_PROJECT_ID` set to these ids (the Vercel CLI prefers that pair to any link), so neither
+the shell's variables nor the current directory's link choose the project. With `--check` or
+`--yes`, the script stops before reading anything if the shell sets either variable to a
+different id, or if the repository's `.vercel/project.json` links a different project.
 
 | Source | Fields | Read with |
 |--------|--------|-----------|
@@ -122,10 +140,11 @@ error never repeats the text.
 
 ### 4.2 Transfer
 
-Every run prints the plan first: variable ← source name, in order, and a plan digest (SHA-256
-over the names and source descriptors, never values). Run the three steps with the same
-manifest; the digest must not change between them. `<password source>` stands for the command
-that prints the password from its designated store, for example
+Every run prints the plan first: the target project, variable ← source name, in order, and a
+plan digest (SHA-256 over the project, the names and the source descriptors, never values). Run
+the three steps with the same manifest; the digest must not change between them.
+`<password source>` stands for the command that prints the password from its designated store,
+for example
 `security find-generic-password -s <service> -a <account> -w` or `op read 'op://<vault>/<item>/password'`.
 
 ```sh
@@ -160,7 +179,7 @@ except `onlyIfAbsent` entries, which are skipped.
 | 0 | plan printed, check passed, or transfer complete with every name present |
 | 1 | unexpected error (a bug or an environment problem): the run ended at that point, and entries already reported as `set` stay set; check `vercel env ls production` and note the message for the account owner |
 | 2 | usage error or invalid manifest; nothing was read or transferred |
-| 3 | `STOPPED`: a source, a value check, a `vercel` command (including a CLI without `--sensitive`), the password-variable pre-check or the final check failed |
+| 3 | `STOPPED`: the project pin (a different id in the environment or in `.vercel/project.json`), a source, a value check, a `vercel` command (including a CLI without `--sensitive`), the password-variable pre-check or the final check failed |
 
 The recommended way to set `ROUTER_PASSWORD_HASH` is the `scrypt-hash` transform above. To set
 it by hand instead, use two steps, so that no hidden prompt competes with another program for
@@ -168,7 +187,7 @@ the terminal, and delete the file afterwards:
 
 ```sh
 (umask 077; mrouter hash-password > router-password.hash)
-vercel env add ROUTER_PASSWORD_HASH production --sensitive < router-password.hash
+VERCEL_ORG_ID=<orgId> VERCEL_PROJECT_ID=<projectId> vercel env add ROUTER_PASSWORD_HASH production --sensitive < router-password.hash
 rm router-password.hash
 ```
 
@@ -178,9 +197,24 @@ also ignores exactly one trailing newline (`\n` or `\r\n`) on `ROUTER_PASSWORD_H
 
 ## 5. Deploy
 
+Deploy from a clean clone at the reviewed commit, not from a working checkout, and pin the
+project as in step 4:
+
 ```sh
-vercel deploy --prod
+git clone <repository> michael-router-deploy && cd michael-router-deploy
+git checkout --detach <reviewed commit>
+git status --short                                   # must print nothing
+VERCEL_ORG_ID=<orgId> VERCEL_PROJECT_ID=<projectId> vercel deploy --prod
 ```
+
+`.vercelignore` is an upload allowlist: it excludes everything at the top level and re-includes
+only `api/`, `src/`, `public/`, `package.json`, `package-lock.json` and `vercel.json`, the files
+the function and the static page need. Inside those it excludes secret-shaped names anywhere
+(`.env*`, `*.hash`, `key-sources*.json`, `*.pem`, `*.key`). So docs, tests, scripts, a manifest,
+`evidence/` or a leftover `router-password.hash` are not uploaded even from a working checkout.
+The test suite checks the file with git's own ignore engine (the same syntax); how Vercel
+applies it is verified only at deploy time: in the deployment's Source view in the dashboard,
+the file listing must show only those paths.
 
 Note the production URL. Environment variable changes take effect only with a new deployment,
 so redeploy after changing any of them.

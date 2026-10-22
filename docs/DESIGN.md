@@ -65,7 +65,7 @@ src/providers/passthrough.js  gemini/openrouter request/response specifics
 src/sse.js               incremental SSE parser/serializer
 src/usage.js             usage + cost recording and aggregation
 src/pricing.js           price lookup; data in src/pricing.json (dated, sourced)
-src/events.js            recent error/auth event log (scrubbed)
+src/events.js            recent error/auth event log (allowlisted metadata, static text)
 src/redact.js            secret scrubber used by events and logs
 src/log.js               allowlisted structured logger
 src/control.js           /control/* routes
@@ -85,6 +85,7 @@ test/{unit,integration,cli,scripts}/   node:test suites
 test/helpers/            shared fixtures, request harness, process and fake-tool helpers
 README.md docs/API.md docs/CLI.md docs/SECURITY.md docs/DEPLOY.md docs/BENCHMARKS.md
 public/                  landing page (static, no JS required)
+.vercelignore            deployment upload allowlist (DEPLOY.md step 5)
 ```
 
 Raw evidence (design renders, benchmark distributions, redacted live output) is written to a
@@ -280,8 +281,8 @@ client set `stream_options.include_usage`), then `data: [DONE]`; `ping` ignored;
 error chunk, no `[DONE]`. Every chunk carries the same `id`, `object: "chat.completion.chunk"`,
 `created`, `model`.
 
-Every upstream or gateway error (except plain 401s, which are `auth` events) appends a scrubbed
-event (§8).
+Every upstream or gateway error (except plain 401s, which are `auth` events) appends an event
+(§8) that keeps the code and status, not the message the client received.
 
 ## 6. Provider keys (`src/keys.js`)
 
@@ -326,15 +327,21 @@ as zero.
 ## 8. Events, logging, redaction
 
 - `mr:v1:events` list, `LPUSH` + `LTRIM 0 199`. Event: `{ts, kind: auth|upstream|gateway, code,
-  status, provider?, model?, message?, source? (auth only, display form), request_id}`.
-  `message` is the upstream/gateway message truncated to 300 chars after scrubbing.
+  status, upstream_status?, provider?, model?, message, source? (auth only, display form),
+  request_id}`. `message` is a fixed gateway sentence chosen by `code` (`EVENT_MESSAGES` in
+  `src/events.js`; for a provider's own code, "The provider answered HTTP n." or, for an error
+  inside a stream, "The provider reported an error inside the stream."). It interpolates only
+  numbers (a block duration, an HTTP status).
 - Never stored or logged anywhere: request bodies, prompts, completions, headers, the password,
-  the password hash, provider keys, `ROUTER_SECRET`, store token.
+  the password hash, provider keys, `ROUTER_SECRET`, store token, and no provider, client or
+  exception text at all: provider error messages can quote the prompt, so only the client that
+  sent the request receives them (scrubbed).
 - `src/redact.js` replaces configured provider keys, the presented bearer value and patterns
   (`sk-ant-…`, `sk-or-…`, `AIza…`, `Bearer …`, long base64/hex tokens) with `[redacted]`.
 - `src/log.js` emits one JSON line per request with allowlisted fields only:
   `request_id, route, method, status, provider, model, duration_ms, upstream_ms, store_ms,
-  error_code, cold`. Unknown fields are dropped. Unexpected exceptions log name + scrubbed message.
+  error_code, cold`. Unknown fields are dropped. Unexpected exceptions log `request_id` and the
+  exception name only, never the message or stack.
 
 ## 9. CLI (`mrouter`)
 
@@ -366,7 +373,8 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 gateway auth/limit, 4 upstream/provider er
 ## 10. Deterministic key copy to Vercel (`scripts/copy-keys-to-vercel.mjs`)
 
 Run by whoever deploys, on the machine that holds the permitted sources. Input: a manifest
-(kept outside the repository or in the gitignored `scripts/key-sources.json`) naming, for each Vercel env
+(kept outside the repository or in the gitignored `scripts/key-sources.json`) pinning the target
+project (`"project": {"orgId": "team_…", "projectId": "prj_…"}`, required) and naming, for each Vercel env
 var, exactly one source. Source types: `keychain` (`security find-generic-password -s S -a A -w`,
 value read from the child's stdout pipe), `file` (absolute path + variable name in a dotenv
 file), `op` (`op read <ref>`), `stdin` (at most one entry), `generate` (random bytes,
@@ -380,8 +388,12 @@ text; refuse file paths under prohibited roots (agent and tool homes `.hermes`, 
 parent directory (firmlinks, bind mounts), files with more than one hard link, any `.env` file
 outside the manifest, and any path not explicitly named;
 child processes get an allowlisted environment (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
-`LC_ALL`, `TERM`, `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `VERCEL_ORG_ID`,
-`VERCEL_PROJECT_ID` and `OP_ACCOUNT`, when set) so no unrelated credential reaches them; never
+`LC_ALL`, `TERM`, `TMPDIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `OP_ACCOUNT`, when set) so no
+unrelated credential reaches them; every `vercel` child runs from the repository root with
+`VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` set to the pinned ids (never the inherited ones), and with
+`--check` or `--yes` a different id in the environment or in the repository's
+`.vercel/project.json` stops the run before any source is read; the plan prints the project and
+its digest covers it; never
 print, log or pass a value in argv (the CLI's
 `--value` flag is never used); send each value on stdin to
 `vercel env add <NAME> <environment> --force --sensitive` (overwrites deterministically; a CLI

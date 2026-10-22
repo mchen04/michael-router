@@ -7,7 +7,8 @@
 //   requestId, request, url, method, params, config, now(), sleep(ms), cold, instance,
 //   timings {auth, store, upstream}, store (timed, fail-closed), waitUntil(promise),
 //   source {id, display}, keys {claude|gemini|openrouter: {provider, configured, source, updated_at, key}},
-//   events.record({kind, code, status, provider?, model?, message?}), redact(text), redactor,
+//   events.record({kind, code, status, upstream_status?, provider?, model?, source?, block_seconds?})
+//   (allowlisted metadata only, never request or upstream text), redact(text), redactor,
 //   log {provider, model, upstream_ms} (fields for the request log line),
 //   fail(status, code, message, headers?) -> gateway_error Response (recorded as a gateway event),
 //   deferLog / finishLog(status) (streaming routes log at stream end), verifyProviderKey,
@@ -199,7 +200,7 @@ export function createHandler(options = {}) {
     ctx.store = store && timed(store, ctx.timings);
     ctx.events = createEventRecorder({ store: ctx.store, waitUntil: ctx.waitUntil, scrub: ctx.redact, now, requestId: ctx.requestId });
     ctx.fail = (/** @type {number} */ status, /** @type {string} */ code, /** @type {string} */ message, headers = {}) => {
-      ctx.error = { status, code, message, recorded: false };
+      ctx.error = { status, code, recorded: false };
       return jsonResponse(status, errorEnvelope({ message, code }), { 'x-router-error-source': 'gateway', ...headers });
     };
     ctx.finishLog = (/** @type {number} */ status) => {
@@ -260,13 +261,13 @@ export function createHandler(options = {}) {
     }
     // 4. Wrong.
     if (!ok) {
-      const { failures, waitMs, blockSeconds } = await limiter.recordFailure(ctx.source.id);
+      const { waitMs, blockSeconds } = await limiter.recordFailure(ctx.source.id);
       ctx.events.record({
         kind: 'auth',
         code: 'invalid_credentials',
         status: 401,
         source: ctx.source.display,
-        message: blockSeconds ? `Source blocked for ${blockSeconds} s after ${failures} failed attempts.` : undefined,
+        block_seconds: blockSeconds || undefined,
       });
       const delay = Math.min(waitMs, 1000);
       if (delay > 0) await ctx.sleep(delay);
@@ -284,7 +285,6 @@ export function createHandler(options = {}) {
         code: 'provider_key_undecryptable',
         status: 500,
         provider,
-        message: 'Stored key override could not be decrypted; treating the provider as not configured.',
       }),
     );
     ctx.redactor = ctx.redactor.with(Object.values(ctx.keys).map((k) => k.key));
@@ -315,7 +315,7 @@ export function createHandler(options = {}) {
     if (ctx.error && ctx.authenticated && !ctx.error.recorded) {
       ctx.error.recorded = true;
       const { provider, model } = ctx.log;
-      ctx.events.record({ kind: 'gateway', code: ctx.error.code, status: ctx.error.status, provider, model, message: ctx.error.message });
+      ctx.events.record({ kind: 'gateway', code: ctx.error.code, status: ctx.error.status, provider, model });
     }
     const out = new Response(response.body, { status: response.status, statusText: response.statusText, headers });
     if (!ctx.deferLog) ctx.finishLog(out.status);

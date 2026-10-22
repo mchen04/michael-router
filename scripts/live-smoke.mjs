@@ -413,7 +413,7 @@ export async function main(argv) {
     const events = !('network' in errors) && Array.isArray(errors.json) ? errors.json : null;
     ev.control.errors = {
       ...control(errors, (r) => r.status === 200 && Array.isArray(r.json)),
-      // without the scrubbed upstream message and the failed-login source address
+      // without the failed-login source address
       events: events?.map((/** @type {any} */ e) => ({ ts: e.ts, kind: e.kind, code: e.code, status: e.status, provider: e.provider, model: e.model, request_id: e.request_id })) ?? null,
     };
     const anonymous = await c.request('/control/health', { password: null });

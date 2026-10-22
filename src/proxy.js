@@ -294,8 +294,8 @@ function failure(ctx, target, err, deadline, timeoutMs) {
  */
 function upstreamError(ctx, target, { status, code, message, upstreamStatus, headers = {}, billable }) {
   const scrubbed = truncate(ctx.redact(message));
-  ctx.error = { status, code, message: scrubbed, recorded: true };
-  ctx.events.record({ kind: 'upstream', code, status, provider: target.provider, model: target.model, message: scrubbed });
+  ctx.error = { status, code, recorded: true };
+  ctx.events.record({ kind: 'upstream', code, status, upstream_status: upstreamStatus, provider: target.provider, model: target.model });
   recordUsage(ctx, { provider: target.provider, model: target.model, error: true, billable, usage: null, usageFinal: false });
   const envelope = errorEnvelope({ message: scrubbed, code, type: 'upstream_error', provider: target.provider, upstream_status: upstreamStatus });
   return jsonResponse(status, envelope, { ...target.headers, 'x-router-error-source': 'upstream', ...headers });
@@ -303,7 +303,7 @@ function upstreamError(ctx, target, { status, code, message, upstreamStatus, hea
 
 /** The client went away before the upstream answered: nothing to send, no event. @param {any} ctx @param {Target} target */
 function clientGone(ctx, target) {
-  ctx.error = { status: 499, code: 'client_disconnected', message: 'Client disconnected.', recorded: true };
+  ctx.error = { status: 499, code: 'client_disconnected', recorded: true };
   recordUsage(ctx, { provider: target.provider, model: target.model, error: false, billable: true, usage: null, usageFinal: false });
   return jsonResponse(499, errorEnvelope({ message: 'Client disconnected.', code: 'client_disconnected' }), target.headers);
 }
@@ -339,10 +339,10 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
     signal.removeEventListener('abort', onAbort);
     deadline.clear();
     if (outcome.kind === 'error') {
-      ctx.error = { status: 200, code: outcome.code, message: outcome.message, recorded: true };
-      ctx.events.record({ kind: 'upstream', code: outcome.code, status: 200, provider, model, message: outcome.message });
+      ctx.error = { status: 200, code: outcome.code, recorded: true };
+      ctx.events.record({ kind: 'upstream', code: outcome.code, status: 200, provider, model });
     } else if (outcome.kind === 'aborted') {
-      ctx.error = { status: 200, code: 'client_disconnected', message: 'Client disconnected.', recorded: true };
+      ctx.error = { status: 200, code: 'client_disconnected', recorded: true };
     }
     recordUsage(ctx, { provider, model, error: outcome.kind === 'error', billable: true, usage: tap.usage, usageFinal: tap.usageFinal });
     ctx.finishLog(200);

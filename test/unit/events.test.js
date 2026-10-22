@@ -16,7 +16,8 @@ test('auth failures are recorded with the display source (IPv4 address or IPv6 /
   assert.equal(r.status, 200);
   assert.equal(r.json.length, 2);
   const [newest, oldest] = r.json;
-  assert.deepEqual(Object.keys(oldest), ['ts', 'kind', 'code', 'status', 'source', 'request_id']);
+  assert.deepEqual(Object.keys(oldest), ['ts', 'kind', 'code', 'status', 'message', 'source', 'request_id']);
+  assert.equal(oldest.message, 'Wrong password.');
   assert.equal(oldest.source, '203.0.113.9');
   assert.equal(newest.source, '2001:db8:aa:bb::/64');
   assert.equal(newest.code, 'invalid_credentials');
@@ -35,7 +36,10 @@ test('the failure that triggers a block says so; pre-auth rejections are not rec
   await h.settle();
   const events = await listEvents(failClosed(h.store));
   assert.equal(events.length, 2);
-  assert.match(events[0].message, /^Source blocked for 3600 s after 2 failed attempts\.$/);
+  assert.deepEqual(
+    events.map((e) => e.message),
+    ['Wrong password; the source is blocked for 3600 s.', 'Wrong password.'],
+  );
 });
 
 test('gateway errors after authentication are recorded; kind filter and limit', async () => {
@@ -70,14 +74,23 @@ test('LTRIM keeps the newest 200 events', async () => {
   assert.equal((await listEvents(store)).length, 50, 'default limit');
 });
 
-test('buildEvent scrubs, truncates after scrubbing and keeps source only for auth', () => {
-  const scrub = (/** @type {unknown} */ s) => String(s).replaceAll('SECRET-VALUE', '[redacted]');
-  const e = buildEvent(
-    { kind: 'upstream', code: 'provider_error', status: 500, provider: 'claude', model: 'claude-x', message: `SECRET-VALUE ${'y'.repeat(400)}`, source: '1.2.3.4' },
-    { scrub, now: () => 0, requestId: 'r1' },
-  );
-  assert.equal(e.message?.toString().length, 300);
-  assert.ok(String(e.message).startsWith('[redacted] '));
-  assert.equal(e.source, undefined);
-  assert.deepEqual(Object.keys(e), ['ts', 'kind', 'code', 'status', 'provider', 'model', 'message', 'request_id']);
+test('buildEvent keeps allowlisted metadata only, with a static message by code, and source only for auth', () => {
+  const opts = { scrub: (/** @type {unknown} */ s) => String(s), now: () => 0, requestId: 'r1' };
+  const input = /** @type {any} */ ({ kind: 'upstream', code: 'provider_error', status: 502, upstream_status: 500, provider: 'claude', model: 'claude-x' });
+  const e = buildEvent({ ...input, message: 'quoted request text', detail: 'more text', source: '1.2.3.4' }, opts);
+  assert.deepEqual(e, {
+    ts: '1970-01-01T00:00:00.000Z',
+    kind: 'upstream',
+    code: 'provider_error',
+    status: 502,
+    upstream_status: 500,
+    provider: 'claude',
+    model: 'claude-x',
+    message: 'The provider failed or answered with something unusable.',
+    request_id: 'r1',
+  });
+  const message = (/** @type {any} */ extra) => buildEvent({ ...input, ...extra }, opts).message;
+  assert.equal(message({ code: 'overloaded_error', status: 529, upstream_status: 529 }), 'The provider answered HTTP 529.');
+  assert.equal(message({ code: 'overloaded_error', status: 200, upstream_status: undefined }), 'The provider reported an error inside the stream.');
+  assert.equal(message({ kind: 'gateway', code: 'other_code', status: 400 }), 'Request refused.');
 });

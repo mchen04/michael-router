@@ -1,6 +1,7 @@
 {
   "version": 1,
   "environment": "production",
+  "project": { "orgId": "team_example", "projectId": "prj_example" },
   "entries": [
     { "env": "ROUTER_SECRET", "source": { "type": "generate", "bytes": 32 }, "onlyIfAbsent": true },
     { "env": "ROUTER_PASSWORD_HASH", "source": { "type": "stdin" }, "transform": "scrypt-hash" },

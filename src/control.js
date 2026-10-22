@@ -90,8 +90,8 @@ export async function setKey(ctx) {
  * @param {number | undefined} upstreamStatus
  */
 function keyNotStored(ctx, provider, status, code, message, upstreamStatus) {
-  ctx.error = { status, code, message, recorded: true };
-  ctx.events.record({ kind: 'upstream', code, status, provider, message });
+  ctx.error = { status, code, recorded: true };
+  ctx.events.record({ kind: 'upstream', code, status, upstream_status: upstreamStatus, provider });
   const envelope = errorEnvelope({ message, code, type: 'upstream_error', provider, upstream_status: upstreamStatus });
   return jsonResponse(status, envelope, { 'x-router-error-source': 'upstream' });
 }

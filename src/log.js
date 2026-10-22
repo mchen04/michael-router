@@ -1,5 +1,5 @@
 // Allowlisted structured logger: one JSON line per request; unknown fields are dropped.
-// Unexpected exceptions log only their name and a scrubbed, truncated message.
+// Unexpected exceptions log only their name: an exception message can quote request or upstream text.
 import { scrub as scrubPatterns } from './redact.js';
 
 export const LOG_FIELDS = Object.freeze([
@@ -15,7 +15,7 @@ export const LOG_FIELDS = Object.freeze([
   'error_code',
   'cold',
 ]);
-export const EXCEPTION_FIELDS = Object.freeze(['request_id', 'exception', 'message']);
+export const EXCEPTION_FIELDS = Object.freeze(['request_id', 'exception']);
 
 /** @param {unknown} v */
 const primitive = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
@@ -41,15 +41,12 @@ export function createLogger({ sink = (line) => console.log(line), errorSink = (
     },
     /**
      * @param {unknown} err
-     * @param {{requestId?: string, redact?: (s: unknown) => string}} [ctx]
+     * @param {{requestId?: string}} [ctx]
      */
     exception(err, ctx = {}) {
-      const e = /** @type {{name?: unknown, message?: unknown}} */ (err ?? {});
+      const e = /** @type {{name?: unknown}} */ (err ?? {});
       const name = typeof e.name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(e.name) ? e.name : 'Error';
-      const redact = ctx.redact ?? scrubPatterns;
-      errorSink(
-        JSON.stringify({ request_id: ctx.requestId ?? null, exception: name, message: redact(String(e.message ?? '')).slice(0, 300) }),
-      );
+      errorSink(JSON.stringify({ request_id: ctx.requestId ?? null, exception: name }));
     },
   };
 }

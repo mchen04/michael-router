@@ -1,6 +1,7 @@
 // The landing page (DESIGN §11): it loads only its own files, nothing in it needs what the
 // vercel.json CSP forbids, and the routing examples, the CLI list and the repository it shows
-// match the code and package.json.
+// match the code and package.json. No curl example, on the page or in the docs, puts the
+// password in curl's arguments, where any local user can read it in the process list.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -67,4 +68,28 @@ test('the Install row and docs/CLI.md name the repository that package.json poin
   assert.equal(repo, 'github.com/mchen04/michael-router');
   assert.ok(block('<dt>Install</dt>', '</div>').includes(`<code>${repo}</code>`));
   assert.ok(readFileSync(new URL('../../docs/CLI.md', import.meta.url), 'utf8').includes(`https://${repo}.git`));
+});
+
+test('no curl example on the page or in the docs puts the expanded password in curl arguments', () => {
+  const root = new URL('../../', import.meta.url);
+  /** @type {Record<string, string>} */
+  const sources = { 'public/index.html': [...html.matchAll(/<pre\b[^>]*>([\s\S]*?)<\/pre>/g)].map((m) => text(m[1])).join('\n') };
+  for (const file of ['README.md', ...readdirSync(new URL('docs/', root)).filter((f) => f.endsWith('.md')).map((f) => `docs/${f}`)]) {
+    sources[file] = readFileSync(new URL(file, root), 'utf8');
+  }
+  // One shell command per line once continuation lines are joined; each pipeline stage stands alone.
+  const curls = Object.entries(sources).flatMap(([file, s]) =>
+    s
+      .replace(/\\\n/g, ' ')
+      .replace(/\|[ \t]*\n/g, '| ')
+      .split('\n')
+      .flatMap((line) => line.split(/&&|\|\||[|;]/))
+      .map((cmd) => cmd.trim())
+      .filter((cmd) => /^curl\s/.test(cmd))
+      .map((cmd) => ({ file, cmd })),
+  );
+  for (const { file, cmd } of curls) assert.doesNotMatch(cmd, /\$\{?\w*password/i, `${file}: ${cmd}`);
+  for (const file of ['public/index.html', 'docs/API.md']) {
+    assert.ok(curls.some((c) => c.file === file && /\s-H @-\s/.test(c.cmd)), `${file} has a curl example that reads the header from stdin`);
+  }
 });

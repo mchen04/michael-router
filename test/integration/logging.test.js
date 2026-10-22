@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { startFakeProviders } from '../../dev/fake-providers.js';
 import { EXCEPTION_FIELDS, LOG_FIELDS } from '../../src/log.js';
+import { REDACTED } from '../../src/redact.js';
 import { ENV_KEYS, PASSWORD, ROUTER_SECRET, STORE_TOKEN, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
 import { startDevServer, startFakeUpstash } from '../helpers/processes.js';
 
@@ -146,7 +147,12 @@ test('no secret or prompt reaches logs, events or the store across the whole API
   assert.equal(echoed.length, 3);
   for (const text of echoed) assert.match(text, /\[redacted\]/, 'the provider echoed our key; the gateway scrubbed it');
   const events = JSON.parse(texts[steps.findIndex((s) => s.path.startsWith('/control/errors'))]);
-  assert.ok(events.some((/** @type {any} */ e) => e.kind === 'upstream' && /\[redacted\]/.test(e.message)));
+  const echoEvents = events.filter((/** @type {any} */ e) => /echo-auth/.test(String(e.model)));
+  assert.equal(echoEvents.length, 3);
+  assert.ok(
+    echoEvents.every((/** @type {any} */ e) => e.kind === 'upstream' && e.message && !e.message.includes(REDACTED)),
+    'events keep a static message, not the scrubbed upstream text',
+  );
   for (const r of providers.requests) assert.ok(!JSON.stringify(r.headers).includes(PASSWORD), 'the router password never reaches a provider');
 
   assert.equal((await fetch(`${dev.url}/`)).status, 200);
@@ -174,6 +180,64 @@ test('no secret or prompt reaches logs, events or the store across the whole API
   assert.deepEqual([byModel('claude-fake-truncated')?.error_code, byModel('claude-fake-truncated')?.provider], ['upstream_stream_incomplete', 'claude']);
   assert.equal(byModel('gemini-fake-slow-first-byte')?.error_code, 'upstream_timeout');
   assert.ok(typeof byModel('google/gemini-2.5-flash-lite')?.upstream_ms === 'number');
+});
+
+test('error text quoting the prompt or other client text reaches the client, never the store, events or logs', async () => {
+  const MARKER = 'marker-SENTINEL-quoted-prompt-0042';
+  const echoStore = await startFakeUpstash(STORE_TOKEN, ['--debug-dump']);
+  const echo = await startDevServer({
+    ROUTER_PASSWORD_HASH: hash,
+    ROUTER_SECRET,
+    KV_REST_API_URL: echoStore.url,
+    KV_REST_API_TOKEN: STORE_TOKEN,
+    ...ENV_KEYS,
+    ...providers.env,
+  });
+  try {
+    const ask = (/** @type {string} */ model, /** @type {Record<string, unknown>} */ extra = {}) => ({
+      method: 'POST',
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: `Summarize: ${MARKER}` }], ...extra }),
+    });
+    const claude = (/** @type {unknown[]} */ messages) => ({ method: 'POST', body: JSON.stringify({ model: 'claude-haiku-5-5', messages }) });
+    const steps = [
+      // the provider quotes the prompt: an HTTP error, an in-stream error, OpenRouter's 200 error body
+      ...['claude-fake-echo-prompt', 'gemini-fake-echo-prompt', 'vendor/fake-echo-prompt'].flatMap((model) => [
+        { path: '/v1/chat/completions', init: ask(model), status: 400 },
+        { path: '/v1/chat/completions', init: ask(model, { stream: true }), status: 200 },
+      ]),
+      { path: '/v1/chat/completions', init: ask('vendor/fake-echo-prompt-200'), status: 502 },
+      // gateway messages that quote client text: model name, message role, content part type, tool call id
+      { path: '/v1/chat/completions', init: ask(MARKER), status: 400 },
+      { path: '/v1/chat/completions', init: claude([{ role: MARKER, content: 'hi' }]), status: 400 },
+      { path: '/v1/chat/completions', init: claude([{ role: 'user', content: [{ type: MARKER }] }]), status: 400 },
+      {
+        path: '/v1/chat/completions',
+        init: claude([{ role: 'user', content: 'hi' }, { role: 'assistant', content: null, tool_calls: [{ id: MARKER, type: 'function', function: { name: 'f', arguments: '[1]' } }] }]),
+        status: 400,
+      },
+    ];
+    const texts = await run(echo.url, steps, PASSWORD);
+    for (const [i, text] of texts.entries()) assert.ok(text.includes(MARKER), `step ${i}: the client gets the error text`);
+    await new Promise((r) => setTimeout(r, 300)); // background event/usage writes
+    const events = await (await fetch(`${echo.url}/control/errors?limit=200`, { headers: { authorization: `Bearer ${PASSWORD}` } })).json();
+    assert.equal(events.length, steps.length, 'every error is recorded');
+    assert.ok(events.every((/** @type {any} */ e) => typeof e.message === 'string' && e.message !== ''), 'with a static message');
+    const dump = await (await fetch(`${echoStore.url}/__dump`, { headers: { authorization: `Bearer ${STORE_TOKEN}` } })).text();
+    await echo.stop();
+    const { stdout, stderr } = echo.output();
+    for (const [name, text] of [
+      ['events', JSON.stringify(events)],
+      ['store dump', dump],
+      ['stdout', stdout],
+      ['stderr', stderr],
+    ]) {
+      assert.ok(!text.includes(MARKER), `${name} contains client text`);
+    }
+    assert.match(dump, /mr:v1:events/);
+    assert.equal(checkLogs(stdout, stderr, steps.length + 1).length, steps.length + 1);
+  } finally {
+    await Promise.all([echo.stop(), echoStore.stop()]);
+  }
 });
 
 test('ROUTER_PASSWORD (plaintext) server: the password never appears in logs, responses or errors', async () => {

@@ -211,6 +211,28 @@ as zero: they are left out of `cost_nusd`.
 has the metrics above, `cost_usd` and `cost_status`: `exact`, `estimated`, `mixed` (both),
 `unknown`, or `partial` (some requests unknown, so `cost_usd` is a lower bound).
 
+### 5.3 Recent events
+
+`GET /control/errors` returns up to `limit` events (1 to 200, default 50), newest first:
+
+```json
+[{"ts": "2026-01-01T12:00:00.000Z", "kind": "upstream", "code": "provider_rate_limited", "status": 429,
+  "upstream_status": 429, "provider": "gemini", "model": "gemini-2.5-flash",
+  "message": "The provider rate-limited the request.", "request_id": "..."}]
+```
+
+- `kind`: `auth` (a wrong password; `source` is the IPv4 address or IPv6 /64), `upstream` (the
+  provider failed) or `gateway` (the gateway refused an authenticated request).
+- `status` is the status the client received (200 for an error inside a stream);
+  `upstream_status` is the provider's HTTP status, when it answered with one.
+- `message` is a fixed gateway sentence chosen by `code`. For a provider's own code it is
+  "The provider answered HTTP n." or, inside a stream, "The provider reported an error inside
+  the stream."
+
+Events keep this metadata only, never provider or request text: a provider's error message can
+quote the prompt. The client that sent the request receives that message, scrubbed of secrets,
+in its error response (§6); events and logs do not keep it.
+
 ## 6. Errors
 
 Errors are never a 2xx and always use the OpenAI envelope:
@@ -295,11 +317,13 @@ Response headers on protected routes:
 
 ## 9. Client configuration
 
-curl:
+curl, with the header on stdin (`-H @-`, curl 7.55 or later); `printf` is a shell builtin, so the
+password never appears in a process's arguments:
 
 ```sh
+printf 'Authorization: Bearer %s\n' "$MROUTER_PASSWORD" |
 curl https://<host>/v1/chat/completions \
-  -H "Authorization: Bearer $MROUTER_PASSWORD" \
+  -H @- \
   -H "content-type: application/json" \
   -d '{"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "Hello"}]}'
 ```

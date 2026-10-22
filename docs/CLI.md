@@ -236,7 +236,10 @@ mrouter usage --since 2026-10-01 --json
 ### `errors [--limit N] [--kind auth|upstream|gateway]`
 
 Recent error and authentication events, newest first: time, kind, code, status,
-provider/model, source and message. `--limit` takes 1 to 200 and defaults to 50.
+provider/model, source and message. The message is the gateway's fixed text for the code (for
+example "The provider rate-limited the request."), never the provider's own message: events
+keep no request or provider text. `--json` also shows `upstream_status` and `request_id`.
+`--limit` takes 1 to 200 and defaults to 50.
 
 ```sh
 mrouter errors --kind auth --limit 10

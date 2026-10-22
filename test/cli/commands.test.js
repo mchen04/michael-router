@@ -204,7 +204,7 @@ test('models: table and JSON', async () => {
   for (const row of rows) for (const n of row.slice(2)) assert.match(n, /^(\d{1,3}(,\d{3})*|-)$/);
 });
 
-test('errors: newest first with time, kind, code, status, provider/model and message; auth events carry the source', async () => {
+test('errors: newest first with time, kind, code, status, provider/model and static message; auth events carry the source', async () => {
   assert.equal((await mr(['ask', '--no-stream', '-m', 'claude-fake-500', 'hi'])).code, 4);
   await waitForJson(stack.url, '/control/errors?kind=upstream', (e) => e.some((/** @type {any} */ x) => x.model === 'claude-fake-500'));
   assert.equal((await mr(['ask', '--no-stream', '-m', 'gemini-fake-503', 'hi'])).code, 4);
@@ -214,13 +214,13 @@ test('errors: newest first with time, kind, code, status, provider/model and mes
   const [header, newest, older] = tableRows(r.stdout);
   assert.deepEqual(header, ['TIME', 'KIND', 'CODE', 'STATUS', 'PROVIDER/MODEL', 'SOURCE', 'MESSAGE']);
   assert.match(newest[0], /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \((just now|\d+s ago)\)$/);
-  assert.deepEqual(newest.slice(1), ['upstream', 'UNAVAILABLE', '503', 'gemini/gemini-fake-503', '-', 'fake 503 error']);
-  assert.deepEqual(older.slice(1), ['upstream', 'api_error', '500', 'claude/claude-fake-500', '-', 'fake 500 error']);
+  assert.deepEqual(newest.slice(1), ['upstream', 'UNAVAILABLE', '503', 'gemini/gemini-fake-503', '-', 'The provider answered HTTP 503.']);
+  assert.deepEqual(older.slice(1), ['upstream', 'api_error', '500', 'claude/claude-fake-500', '-', 'The provider answered HTTP 500.']);
 
   assert.equal((await mr(['health'], { env: { MROUTER_PASSWORD: WRONG_PASSWORD } })).code, 3);
   await waitForJson(stack.url, '/control/errors?kind=auth', (e) => e.length > 0);
   const auth = tableRows((await mr(['errors', '--kind', 'auth', '--limit', '1'])).stdout)[1];
-  assert.deepEqual(auth.slice(1, 6), ['auth', 'invalid_credentials', '401', '-', '127.0.0.1']);
+  assert.deepEqual(auth.slice(1), ['auth', 'invalid_credentials', '401', '-', '127.0.0.1', 'Wrong password.']);
   const json = JSON.parse((await mr(['errors', '--json', '--limit', '3'])).stdout);
   assert.ok(Array.isArray(json) && json.length === 3);
   assert.equal(json[0].kind, 'auth');

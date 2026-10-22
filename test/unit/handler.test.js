@@ -156,20 +156,20 @@ test('successful control responses carry server-timing; x-router-cold and health
   assert.equal((await anon.call('/control/health', { headers: bearer() })).headers.has('x-router-cold'), false);
 });
 
-test('unexpected exceptions: 500 internal_error, logged as name + scrubbed message only', async () => {
+test('unexpected exceptions: 500 internal_error, logged as the name only', async () => {
   const h = await makeHarness({
     verifyPassword: async (/** @type {any} */ _parsed, /** @type {string} */ presented) => {
-      throw new TypeError(`exploded while checking ${presented} with ${ROUTER_SECRET}`);
+      throw new TypeError(`exploded on quoted-request-text while checking ${presented} with ${ROUTER_SECRET}`);
     },
   });
   const r = await h.call('/control/health', { headers: bearer() });
   assert.equal(r.status, 500);
   assert.equal(r.json.error.code, 'internal_error');
   const exception = h.logs.map((l) => JSON.parse(l)).find((l) => l.exception);
-  assert.deepEqual(Object.keys(exception).sort(), ['exception', 'message', 'request_id']);
+  assert.deepEqual(Object.keys(exception).sort(), ['exception', 'request_id']);
   assert.equal(exception.exception, 'TypeError');
-  assert.ok(!exception.message.includes(PASSWORD) && !exception.message.includes(ROUTER_SECRET), exception.message);
-  assert.ok(exception.message.includes('[redacted]'));
+  const logs = h.logs.join('\n');
+  for (const text of ['quoted-request-text', 'exploded', PASSWORD, ROUTER_SECRET]) assert.ok(!logs.includes(text), text);
 });
 
 test('verifyPassword is the real scrypt verifier by default', async () => {

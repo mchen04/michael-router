@@ -1,0 +1,16 @@
+# Upload allowlist for `vercel deploy` (gitignore syntax): nothing at the top level is uploaded
+# except what the deployment needs. See docs/DEPLOY.md step 5.
+/*
+!/api
+!/src
+!/public
+!/package.json
+!/package-lock.json
+!/vercel.json
+
+# Never upload secret-shaped files, even inside the allowlisted directories.
+.env*
+*.hash
+key-sources*.json
+*.pem
+*.key

@@ -3,14 +3,17 @@
 //
 //   node scripts/copy-keys-to-vercel.mjs --manifest <path> [--environment production] [--check | --yes]
 //
-// The manifest names, for each Vercel environment variable, exactly one source; entries are
-// handled in manifest order. Modes:
-//   (default)  print the plan (env name <- source name, plan digest) and exit; nothing is read.
+// The manifest pins the Vercel project ("project": {"orgId", "projectId"}) and names, for each
+// Vercel environment variable, exactly one source; entries are handled in manifest order. Modes:
+//   (default)  print the plan (project, env name <- source name, plan digest) and exit; nothing is read.
 //   --check    read and validate every source; no `vercel` command except `env ls`.
 //   --yes      read, validate and transfer each value with `vercel env add <NAME> production --force
 //              --sensitive`, the value written to the child's stdin. A Vercel CLI without --sensitive
 //              stops the run first. onlyIfAbsent entries are sent without --force: when Vercel
 //              answers that the name already exists, the entry is skipped, never overwritten.
+// Every `vercel` command runs from the repository root with VERCEL_ORG_ID/VERCEL_PROJECT_ID set
+// to the pinned ids. With --check or --yes, a different id in the environment or in the
+// repository's .vercel/project.json stops the run before anything is read.
 // Every failure stops the run at once (no fallback source, no retry, no further entries):
 //   STOPPED at <ENV> (source <type:name>): <scrubbed reason>
 // Exit codes: 0 done, 1 unexpected error, 2 usage or invalid manifest, 3 stopped or final check failed.
@@ -25,7 +28,7 @@ import { open, readFile, realpath, stat } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { hashPassword, parsePasswordHash } from '../src/auth.js';
 import { MIN_PASSWORD_LENGTH, providerKeyProblem } from '../src/config.js';
 import { scrub } from '../src/redact.js';
@@ -47,8 +50,13 @@ const STORE_PAIRS = [
   ['KV_REST_API_URL', 'KV_REST_API_TOKEN'],
   ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'],
 ];
-/** The only environment variables passed to `vercel`, `security` and `op` (when set). */
-const CHILD_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'OP_ACCOUNT'];
+/** The only environment variables passed on to `vercel`, `security` and `op` (when set). */
+const CHILD_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'OP_ACCOUNT'];
+/** The repository root: every `vercel` command runs here, and its .vercel/project.json is checked. */
+const REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+/** Vercel ids: an org is a team (`team_…`) or a user id; a project is `prj_…`. */
+const ORG_ID_RE = /^(?:team_)?[A-Za-z0-9]{1,64}$/;
+const PROJECT_ID_RE = /^prj_[A-Za-z0-9]{1,64}$/;
 /** Production only: Preview needs a git-branch answer and Development cannot hold sensitive values. */
 const ENVIRONMENTS = ['production'];
 const SHELL_RC_FILES = new Set([
@@ -75,7 +83,8 @@ const printable = (s) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?');
  * @typedef {{type: 'keychain', service: string, account: string} | {type: 'file', path: string, var: string} |
  *   {type: 'op', ref: string} | {type: 'stdin'} | {type: 'generate', bytes: number}} Source
  * @typedef {{env: keyof typeof NAMES, source: Source, transform: 'scrypt-hash' | null, onlyIfAbsent: boolean, file?: string}} Entry
- * @typedef {{version: 1, environment: string, entries: Entry[]}} Manifest
+ * @typedef {{orgId: string, projectId: string}} Project
+ * @typedef {{version: 1, environment: string, project: Project, entries: Entry[]}} Manifest
  */
 
 /** @param {unknown} v */
@@ -222,19 +231,31 @@ function parseSource(raw, where, home, roots) {
   }
 }
 
+/** The pinned project: exactly `orgId` and `projectId`, each shaped like a Vercel id. @param {unknown} raw @returns {Project} */
+function parseProject(raw) {
+  const where = 'manifest "project"';
+  if (!isObject(raw)) throw new UsageError('manifest: "project" must be an object with "orgId" and "projectId"');
+  const p = /** @type {Record<string, any>} */ (raw);
+  exactKeys(p, ['orgId', 'projectId'], [], where);
+  if (typeof p.orgId !== 'string' || !ORG_ID_RE.test(p.orgId)) throw new UsageError(`${where}: "orgId" must be a Vercel team id (team_…) or user id`);
+  if (typeof p.projectId !== 'string' || !PROJECT_ID_RE.test(p.projectId)) throw new UsageError(`${where}: "projectId" must be a Vercel project id (prj_…)`);
+  return { orgId: p.orgId, projectId: p.projectId };
+}
+
 /**
- * Validate a parsed manifest. Unknown keys anywhere, unknown or repeated names, a second stdin
- * entry and prohibited file paths are refused.
+ * Validate a parsed manifest. A missing or malformed project, unknown keys anywhere, unknown or
+ * repeated names, a second stdin entry and prohibited file paths are refused.
  * @param {unknown} raw @param {{home?: string, environment?: string}} [options]
  * @returns {Manifest}
  */
 export function validateManifest(raw, { home = os.homedir(), environment } = {}) {
   if (!isObject(raw)) throw new UsageError('manifest: must be a JSON object');
   const m = /** @type {Record<string, any>} */ (raw);
-  exactKeys(m, ['version', 'environment', 'entries'], [], 'manifest');
+  exactKeys(m, ['version', 'environment', 'project', 'entries'], [], 'manifest');
   if (m.version !== 1) throw new UsageError('manifest: "version" must be 1');
   if (!ENVIRONMENTS.includes(m.environment)) throw new UsageError(`manifest: "environment" must be ${ENVIRONMENTS.map((e) => `"${e}"`).join(' or ')}`);
   if (environment !== undefined && environment !== m.environment) throw new UsageError(`--environment ${printable(environment)} does not match the manifest's "${m.environment}"`);
+  const project = parseProject(m.project);
   if (!Array.isArray(m.entries) || m.entries.length === 0 || m.entries.length > MAX_ENTRIES) {
     throw new UsageError(`manifest: "entries" must be an array of 1 to ${MAX_ENTRIES} entries`);
   }
@@ -269,7 +290,7 @@ export function validateManifest(raw, { home = os.homedir(), environment } = {})
   if (seen.has('UPSTASH_REDIS_REST_URL') !== seen.has('UPSTASH_REDIS_REST_TOKEN')) {
     throw new UsageError('manifest: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN go together');
   }
-  return { version: 1, environment: m.environment, entries };
+  return { version: 1, environment: m.environment, project, entries };
 }
 
 /** Deterministic JSON: object keys sorted, no whitespace. @param {unknown} v @returns {string} */
@@ -285,11 +306,12 @@ function canonical(v) {
   return JSON.stringify(v);
 }
 
-/** SHA-256 over the canonical names and source descriptors (never values). @param {Manifest} m */
+/** SHA-256 over the canonical project, names and source descriptors (never values). @param {Manifest} m */
 export function planDigest(m) {
   const plan = {
     version: m.version,
     environment: m.environment,
+    project: { orgId: m.project.orgId, projectId: m.project.projectId },
     entries: m.entries.map(({ env, source, transform, onlyIfAbsent }) => {
       const { file: _resolved, ...descriptor } = /** @type {Source & {file?: string}} */ (source);
       return { env, source: descriptor, transform, onlyIfAbsent };
@@ -316,14 +338,15 @@ function sourceName(s) {
 
 // ------------------------------------------------------------------ child processes
 
-function childEnv() {
+/** The allowlisted environment, plus `extra` (set explicitly, never inherited). @param {Record<string, string>} [extra] */
+function childEnv(extra = {}) {
   /** @type {Record<string, string>} */
   const env = {};
   for (const name of CHILD_ENV) {
     const v = process.env[name];
     if (typeof v === 'string' && v !== '') env[name] = v;
   }
-  return env;
+  return { ...env, ...extra };
 }
 
 /**
@@ -333,9 +356,10 @@ function childEnv() {
 /**
  * Run a command with the allowlisted environment, no shell, optional stdin bytes.
  * @param {string} command @param {string[]} args @param {Buffer} [input]
+ * @param {{env?: Record<string, string>, cwd?: string}} [options] extra environment and working directory
  * @returns {Promise<ChildResult>}
  */
-function runChild(command, args, input) {
+function runChild(command, args, input, { env, cwd } = {}) {
   return new Promise((resolve) => {
     /** @type {Buffer[]} */
     const out = [];
@@ -353,7 +377,7 @@ function runChild(command, args, input) {
       for (const c of out) c.fill(0);
       resolve({ ok: failure === null && code === 0, code, failure, stdout, stderr: Buffer.concat(err) });
     };
-    const child = spawn(command, args, { env: childEnv(), stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false });
+    const child = spawn(command, args, { env: childEnv(env), cwd, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
@@ -561,6 +585,49 @@ export function valueProblem(entry, value) {
 
 // ------------------------------------------------------------------ vercel
 
+/**
+ * `vercel` from the repository root, pinned to the manifest's project: the CLI uses the
+ * VERCEL_ORG_ID/VERCEL_PROJECT_ID pair over any link, and the inherited values are never passed.
+ * @param {Project} project @param {string[]} args @param {Buffer} [input]
+ */
+const vercel = (project, args, input) =>
+  runChild('vercel', args, input, { env: { VERCEL_ORG_ID: project.orgId, VERCEL_PROJECT_ID: project.projectId }, cwd: REPO_ROOT });
+
+/** An id as printed: only when it has the shape of a Vercel id. @param {unknown} v @param {RegExp} re */
+const shownId = (v, re) => (typeof v === 'string' && re.test(v) ? v : 'not a Vercel id');
+
+/**
+ * Why the run may not target the pinned project, or null: a different VERCEL_ORG_ID or
+ * VERCEL_PROJECT_ID in this process's environment, or a repository link (.vercel/project.json)
+ * to another project. Checked before any source is read.
+ * @param {Project} project
+ */
+async function projectProblem(project) {
+  const env = /** @type {const} */ ([['VERCEL_ORG_ID', project.orgId, ORG_ID_RE], ['VERCEL_PROJECT_ID', project.projectId, PROJECT_ID_RE]]);
+  const differ = env.filter(([name, pinned]) => (process.env[name] ?? '') !== '' && process.env[name] !== pinned);
+  if (differ.length) {
+    return `${differ.map(([name, pinned, re]) => `${name} in the environment is ${shownId(process.env[name], re)}, but the manifest pins ${pinned}`).join('; ')}; unset ${differ.length > 1 ? 'them' : 'it'} or correct the manifest. Nothing was read or transferred.`;
+  }
+  let text;
+  try {
+    text = await readFile(path.join(REPO_ROOT, '.vercel', 'project.json'), 'utf8');
+  } catch (err) {
+    const code = /** @type {NodeJS.ErrnoException} */ (err).code;
+    if (code === 'ENOENT') return null;
+    return `.vercel/project.json cannot be read (${code ?? 'error'}); nothing was read or transferred.`;
+  }
+  const fix = 'run "vercel link" for the pinned project, remove .vercel/, or correct the manifest. Nothing was read or transferred.';
+  let link;
+  try {
+    link = JSON.parse(text);
+  } catch {
+    return `.vercel/project.json is not valid JSON; ${fix}`;
+  }
+  if (isObject(link) && link.orgId === project.orgId && link.projectId === project.projectId) return null;
+  const linked = isObject(link) ? `${shownId(link.projectId, PROJECT_ID_RE)} (org ${shownId(link.orgId, ORG_ID_RE)})` : 'no project';
+  return `.vercel/project.json links ${linked}, but the manifest pins ${project.projectId} (org ${project.orgId}); ${fix}`;
+}
+
 /** Variable names in `vercel env ls` output (first column); the output itself is never printed. @param {ChildResult} r */
 function envNames(r) {
   const names = new Set();
@@ -571,9 +638,9 @@ function envNames(r) {
   return names;
 }
 
-/** @param {string} environment */
-async function listEnv(environment) {
-  const r = await runChild('vercel', ['env', 'ls', environment]);
+/** @param {Project} project @param {string} environment */
+async function listEnv(project, environment) {
+  const r = await vercel(project, ['env', 'ls', environment]);
   return r.ok ? { names: envNames(r) } : { problem: failureLine(r, 'vercel', []) };
 }
 
@@ -625,6 +692,7 @@ const stopAt = (e) => `${e.env} (source ${sourceName(e.source)})`;
 
 /** @param {Manifest} m */
 function printPlan(m) {
+  say(`Vercel project: ${m.project.projectId} (org ${m.project.orgId})`);
   say(`Plan: ${m.entries.length} entr${m.entries.length === 1 ? 'y' : 'ies'} for Vercel environment "${m.environment}", in this order:`);
   const width = Math.max(...m.entries.map((e) => e.env.length));
   m.entries.forEach((e, i) => {
@@ -683,15 +751,18 @@ export async function main(argv) {
     return EXIT.OK;
   }
 
+  // Keys go to the pinned project only: an environment or link naming another stops the run here.
+  const pin = await projectProblem(m.project);
+  if (pin) return stop('project pin', pin);
   if (opts.yes) {
     // Every managed variable is a secret: without --sensitive nothing is transferred.
-    const help = await runChild('vercel', ['env', 'add', '--help']);
+    const help = await vercel(m.project, ['env', 'add', '--help']);
     if (help.failure) return stop('vercel env add --help', help.failure);
     if (!/--sensitive\b/.test(`${help.stdout}${help.stderr}`)) {
       return stop('vercel env add --help', 'this Vercel CLI does not offer --sensitive; every managed variable is a secret, so nothing was read or transferred. Update the Vercel CLI and run again.');
     }
   }
-  const before = await listEnv(m.environment);
+  const before = await listEnv(m.project, m.environment);
   if ('problem' in before) return stop(`vercel env ls ${m.environment}`, /** @type {string} */ (before.problem));
   const existing = /** @type {Set<string>} */ (before.names);
   const sets = new Set(m.entries.map((e) => e.env));
@@ -739,7 +810,7 @@ export async function main(argv) {
     // onlyIfAbsent never overwrites: without --force, Vercel itself refuses an existing name,
     // even one that `env ls` did not show.
     const args = ['env', 'add', entry.env, m.environment, ...(entry.onlyIfAbsent ? [] : ['--force']), '--sensitive'];
-    const r = await runChild('vercel', args, value);
+    const r = await vercel(m.project, args, value);
     const scrubValues = [value.toString('latin1')];
     value.fill(0);
     if (!r.ok && !r.failure && entry.onlyIfAbsent && ALREADY_EXISTS.test(childText(r))) {
@@ -754,7 +825,7 @@ export async function main(argv) {
     say(`Check passed: ${n} entr${n === 1 ? 'y' : 'ies'}; nothing was transferred.`);
     return EXIT.OK;
   }
-  const final = await listEnv(m.environment);
+  const final = await listEnv(m.project, m.environment);
   if ('problem' in final) return stop(`vercel env ls ${m.environment}`, /** @type {string} */ (final.problem));
   return finalReport(new Set([.../** @type {Set<string>} */ (final.names), ...confirmed]), m);
 }

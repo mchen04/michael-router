@@ -1,11 +1,13 @@
 // scripts/copy-keys-to-vercel.mjs against fake `vercel`, `security` and `op` executables placed
 // first on PATH. Every source value is an invented sentinel; the tests prove the values arrive
 // byte-exact on the fake's stdin and never anywhere else (argv, output, files, child env).
+// The script runs as a copy inside a scratch repository (with src/ and package.json), so the
+// tests control <repo>/.vercel/project.json and never touch the checkout's own link.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
@@ -14,7 +16,6 @@ import { loadConfig } from '../../src/config.js';
 import { REPO, createFakeTools, makeScratchRoot } from '../helpers/fake-tools.js';
 import { pathProblem, prohibitedRoots } from '../../scripts/copy-keys-to-vercel.mjs';
 
-const SCRIPT = path.join(REPO, 'scripts', 'copy-keys-to-vercel.mjs');
 const MARKER = 'SENTINEL';
 const VALUES = Object.freeze({
   claude: 'sk-ant-fake-SENTINEL-copy-claude-7a1b',
@@ -24,7 +25,12 @@ const VALUES = Object.freeze({
   password: 'pw-SENTINEL-copy-password-9e8f7d',
   unrelated: 'unrelated-SENTINEL-parent-env-5a5a',
 });
-const CHILD_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'OP_ACCOUNT'];
+const CHILD_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'OP_ACCOUNT'];
+/** The pinned project (fake-shaped ids), and other projects the keys must never go to. */
+const PROJECT = Object.freeze({ orgId: 'team_TestOrg01', projectId: 'prj_TestProject01' });
+const PINNED = `${PROJECT.orgId}/${PROJECT.projectId}`;
+const INHERITED = Object.freeze({ VERCEL_ORG_ID: 'team_InheritedOrg', VERCEL_PROJECT_ID: 'prj_InheritedProject' });
+const OTHER_LINK = Object.freeze({ orgId: 'team_LinkedOrg', projectId: 'prj_LinkedProject', projectName: 'linked' });
 const KEYCHAIN = { type: 'keychain', service: 'test-service', account: 'test-account' };
 const OP_REF = 'op://Test Vault/Gemini/credential';
 const FULL = [
@@ -42,6 +48,9 @@ let scratch;
 let fakes;
 let home = '';
 let tmpdir = '';
+/** The scratch repository root and the script copy inside it. */
+let repo = '';
+let script = '';
 const skip = (() => {
   const problem = pathProblem(REPO, prohibitedRoots());
   return problem ? `the checkout itself is a prohibited source location (${problem})` : false;
@@ -53,6 +62,12 @@ before(async () => {
   fakes = await createFakeTools(scratch.root);
   home = path.join(scratch.root, 'home');
   tmpdir = path.join(scratch.root, 'tmpdir');
+  repo = path.join(scratch.root, 'repo');
+  script = path.join(repo, 'scripts', 'copy-keys-to-vercel.mjs');
+  await mkdir(path.dirname(script), { recursive: true });
+  await copyFile(path.join(REPO, 'scripts', 'copy-keys-to-vercel.mjs'), script);
+  await copyFile(path.join(REPO, 'package.json'), path.join(repo, 'package.json'));
+  await cp(path.join(REPO, 'src'), path.join(repo, 'src'), { recursive: true });
   await mkdir(path.join(home, 'secrets'), { recursive: true });
   await mkdir(tmpdir);
   const dotenv = [
@@ -77,21 +92,27 @@ function configure(extra = {}) {
   });
 }
 
-/** @param {unknown[]} entries @param {Record<string, unknown>} [top] */
+/** @param {unknown[]} entries @param {Record<string, unknown>} [top] (`project: undefined` omits it) */
 async function manifest(entries, top = {}) {
   const file = path.join(scratch.root, 'manifest.json');
-  await writeFile(file, JSON.stringify({ version: 1, environment: 'production', entries, ...top }));
+  await writeFile(file, JSON.stringify({ version: 1, environment: 'production', project: PROJECT, entries, ...top }));
   return file;
 }
 
+/** Write <dir>/.vercel/project.json (an object as JSON, a string as is). @param {string} dir @param {unknown} content */
+async function writeLink(dir, content) {
+  await mkdir(path.join(dir, '.vercel'), { recursive: true });
+  await writeFile(path.join(dir, '.vercel', 'project.json'), typeof content === 'string' ? content : JSON.stringify(content));
+}
+
 /**
- * @param {string[]} args @param {{input?: string, env?: Record<string, string>}} [options]
+ * @param {string[]} args @param {{input?: string, env?: Record<string, string>, cwd?: string}} [options]
  * @returns {Promise<{code: number | null, stdout: string, stderr: string}>}
  */
-function runCopy(args, { input = '', env = {} } = {}) {
+function runCopy(args, { input = '', env = {}, cwd = scratch.root } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [SCRIPT, ...args], {
-      cwd: scratch.root,
+    const child = spawn(process.execPath, [script, ...args], {
+      cwd,
       env: {
         PATH: [fakes.bin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter),
         HOME: home,
@@ -147,31 +168,40 @@ async function assertNoSecretLeaked(secrets, run) {
   }
 }
 
-test('without --yes it prints the plan and a digest of names and sources, and reads nothing', { skip }, async () => {
+test('without --yes it prints the project, the plan and a digest of all three, and reads nothing', { skip }, async () => {
   await configure();
   const r = await runCopy(['--manifest', await manifest(FULL)]);
   assert.equal(r.code, 0, r.stderr);
   const lines = r.stdout.split('\n');
-  assert.match(lines[1], /^ {2}1\. ROUTER_SECRET +<- generate:32 \(only if absent\)$/);
-  assert.match(lines[2], /^ {2}2\. ROUTER_PASSWORD_HASH <- stdin \(scrypt-hash\)$/);
-  assert.match(lines[3], /^ {2}3\. ANTHROPIC_API_KEY +<- keychain:test-service\/test-account$/);
+  assert.equal(lines[0], 'Vercel project: prj_TestProject01 (org team_TestOrg01)');
+  assert.equal(lines[1], 'Plan: 5 entries for Vercel environment "production", in this order:');
+  assert.match(lines[2], /^ {2}1\. ROUTER_SECRET +<- generate:32 \(only if absent\)$/);
+  assert.match(lines[3], /^ {2}2\. ROUTER_PASSWORD_HASH <- stdin \(scrypt-hash\)$/);
+  assert.match(lines[4], /^ {2}3\. ANTHROPIC_API_KEY +<- keychain:test-service\/test-account$/);
   assert.match(r.stdout, /Dry run: nothing was read or transferred/);
   assert.deepEqual(await fakes.calls(), [], 'no child process ran');
   const digest = /Plan digest: sha256:([0-9a-f]{64})/.exec(r.stdout)?.[1];
   assert.ok(digest);
 
-  // Canonical: key order and whitespace do not matter; a different source does.
-  const reordered = FULL.map((e) => Object.fromEntries(Object.entries(e).reverse()));
+  // Canonical: key order and whitespace do not matter; a different source or project does.
+  const reversed = (/** @type {object} */ o) => Object.fromEntries(Object.entries(o).reverse());
+  const reordered = FULL.map(reversed);
   const file = path.join(scratch.root, 'reordered.json');
-  await writeFile(file, JSON.stringify({ entries: reordered, environment: 'production', version: 1 }, null, 2));
+  await writeFile(file, JSON.stringify({ entries: reordered, project: reversed(PROJECT), environment: 'production', version: 1 }, null, 2));
   assert.match((await runCopy(['--manifest', file])).stdout, new RegExp(`sha256:${digest}`));
   const changed = FULL.map((e) => (e.env === 'ANTHROPIC_API_KEY' ? { ...e, source: { ...KEYCHAIN, account: 'other' } } : e));
   assert.doesNotMatch((await runCopy(['--manifest', await manifest(changed)])).stdout, new RegExp(`sha256:${digest}`));
+  for (const project of [{ ...PROJECT, projectId: 'prj_TestProject02' }, { ...PROJECT, orgId: 'team_TestOrg02' }]) {
+    const other = await runCopy(['--manifest', await manifest(FULL, { project })]);
+    assert.equal(other.code, 0, other.stderr);
+    assert.equal(other.stdout.split('\n')[0], `Vercel project: ${project.projectId} (org ${project.orgId})`);
+    assert.doesNotMatch(other.stdout, new RegExp(`sha256:${digest}`), 'the digest covers the project');
+  }
 
   // The shipped example manifest is valid as written.
   const example = await runCopy(['--manifest', path.join(REPO, 'scripts', 'key-sources.example.json')]);
   assert.equal(example.code, 0, example.stderr);
-  assert.match(example.stdout, /^Plan: 5 entries for Vercel environment "production"/);
+  assert.match(example.stdout, /^Vercel project: prj_example \(org team_example\)\nPlan: 5 entries for Vercel environment "production"/);
 });
 
 test('--yes transfers every source type byte-exact on stdin and nothing leaks anywhere', { skip }, async () => {
@@ -193,9 +223,17 @@ test('--yes transfers every source type byte-exact on stdin and nothing leaks an
   ]);
   assert.deepEqual(calls.find((c) => c.tool === 'security')?.argv, ['find-generic-password', '-s', 'test-service', '-a', 'test-account', '-w']);
   assert.deepEqual(calls.find((c) => c.tool === 'op')?.argv, ['read', OP_REF]);
+  // Every vercel child is pinned to the manifest's project and runs from the repository root;
+  // security and op get no Vercel ids at all.
+  const root = await realpath(repo);
   for (const c of calls) {
-    const extra = c.env.filter((n) => !CHILD_ENV.includes(n) && !n.startsWith('__CF'));
+    const allowed = c.tool === 'vercel' ? [...CHILD_ENV, 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID'] : CHILD_ENV;
+    const extra = c.env.filter((n) => !allowed.includes(n) && !n.startsWith('__CF'));
     assert.deepEqual(extra, [], `${c.tool} received non-allowlisted environment variables`);
+    if (c.tool !== 'vercel') continue;
+    assert.deepEqual(c.ids, PROJECT, `vercel ${c.argv.join(' ')}`);
+    assert.equal(c.target, PINNED);
+    assert.equal(await realpath(c.cwd), root, 'vercel runs from the repository root');
   }
 
   const captured = await fakes.captured();
@@ -215,6 +253,82 @@ test('--yes transfers every source type byte-exact on stdin and nothing leaks an
   assert.deepEqual(config.problems, []);
 
   await assertNoSecretLeaked([...Object.values(VALUES), captured.ROUTER_PASSWORD_HASH, captured.ROUTER_SECRET], r);
+});
+
+test('without a pinned project nothing runs, so keys never go to an inherited or linked project', { skip }, async () => {
+  // The operator's environment names one project, the working directory is linked to another.
+  const linked = path.join(scratch.root, 'linked');
+  await writeLink(linked, OTHER_LINK);
+  const unpinned = await manifest([FULL[2]], { project: undefined });
+  /** @type {Record<string, string[]>} */
+  const targets = {};
+  /** @type {Record<string, number | null>} */
+  const codes = {};
+  for (const [name, options] of /** @type {const} */ ([['inherited', { env: INHERITED }], ['linked', { cwd: linked }]])) {
+    await configure();
+    const r = await runCopy(['--manifest', unpinned, '--yes'], options);
+    codes[name] = r.code;
+    targets[name] = (await fakes.calls()).filter((c) => c.tool === 'vercel').map((c) => `${c.argv.join(' ')} -> ${c.target}`);
+    if (r.code === 2) assert.match(r.stderr, /manifest: "project" is required/);
+  }
+  assert.deepEqual(targets, { inherited: [], linked: [] }, 'vercel ran against a project the manifest does not name');
+  assert.deepEqual(codes, { inherited: 2, linked: 2 });
+});
+
+test('a different project in the environment or in the repository link stops the run before anything is read', { skip }, async () => {
+  const file = await manifest(FULL);
+  /** @type {[string, {env?: Record<string, string>}, unknown, RegExp][]} */
+  const cases = [
+    ['env project', { env: { VERCEL_PROJECT_ID: 'prj_OtherProject' } }, null, /^STOPPED at project pin: VERCEL_PROJECT_ID in the environment is prj_OtherProject, but the manifest pins prj_TestProject01; /m],
+    ['env org', { env: { VERCEL_ORG_ID: 'team_OtherOrg', VERCEL_PROJECT_ID: PROJECT.projectId } }, null, /^STOPPED at project pin: VERCEL_ORG_ID in the environment is team_OtherOrg, but the manifest pins team_TestOrg01; /m],
+    ['env not an id', { env: { VERCEL_PROJECT_ID: VALUES.unrelated } }, null, /^STOPPED at project pin: VERCEL_PROJECT_ID in the environment is not a Vercel id, but the manifest pins prj_TestProject01; /m],
+    ['link project', {}, { orgId: PROJECT.orgId, projectId: 'prj_LinkedProject' }, /^STOPPED at project pin: \.vercel\/project\.json links prj_LinkedProject \(org team_TestOrg01\), but the manifest pins prj_TestProject01 \(org team_TestOrg01\); /m],
+    ['link org', {}, { orgId: 'team_LinkedOrg', projectId: PROJECT.projectId }, /^STOPPED at project pin: \.vercel\/project\.json links prj_TestProject01 \(org team_LinkedOrg\), /m],
+    ['link malformed', {}, '{"orgId": ', /^STOPPED at project pin: \.vercel\/project\.json is not valid JSON; /m],
+  ];
+  for (const mode of ['--check', '--yes']) {
+    for (const [name, options, link, expected] of cases) {
+      await configure();
+      if (link !== null) await writeLink(repo, link);
+      try {
+        const r = await runCopy(['--manifest', file, mode], { input: VALUES.password, ...options });
+        assert.equal(r.code, 3, `${mode} ${name}: ${r.stdout}${r.stderr}`);
+        assert.match(r.stdout, expected, `${mode} ${name}`);
+        assert.deepEqual(await fakes.calls(), [], `${mode} ${name}: no vercel command ran and no source was read`);
+        assert.ok(!(r.stdout + r.stderr).includes(MARKER), 'a non-id value was echoed');
+      } finally {
+        await rm(path.join(repo, '.vercel'), { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test('a matching environment and link run normally: vercel gets the pinned ids, from the repository root', { skip }, async () => {
+  await configure();
+  await writeLink(repo, { ...PROJECT, projectName: 'test-project' });
+  const elsewhere = path.join(scratch.root, 'linked'); // the operator's cwd, linked to another project
+  await writeLink(elsewhere, OTHER_LINK);
+  try {
+    const r = await runCopy(['--manifest', await manifest([FULL[2], FULL[3]]), '--yes'], { cwd: elsewhere, env: { VERCEL_ORG_ID: PROJECT.orgId, VERCEL_PROJECT_ID: PROJECT.projectId } });
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const calls = await fakes.calls();
+    const vercel = calls.filter((c) => c.tool === 'vercel');
+    assert.deepEqual(vercel.map((c) => `${c.argv.join(' ')} -> ${c.target}`), [
+      `env add --help -> ${PINNED}`,
+      `env ls production -> ${PINNED}`,
+      `env add ANTHROPIC_API_KEY production --force --sensitive -> ${PINNED}`,
+      `env add GEMINI_API_KEY production --force --sensitive -> ${PINNED}`,
+      `env ls production -> ${PINNED}`,
+    ]);
+    const root = await realpath(repo);
+    for (const c of vercel) {
+      assert.deepEqual(c.ids, PROJECT);
+      assert.equal(await realpath(c.cwd), root);
+    }
+    for (const c of calls.filter((x) => x.tool !== 'vercel')) assert.deepEqual(c.env.filter((n) => n.startsWith('VERCEL_')), [], `${c.tool} got Vercel ids`);
+  } finally {
+    await rm(path.join(repo, '.vercel'), { recursive: true, force: true });
+  }
 });
 
 test('onlyIfAbsent skips a present name; --check reads every source but adds nothing', { skip }, async () => {
@@ -360,6 +474,12 @@ test('malformed manifests are refused before anything runs', { skip }, async () 
     ['"generate" is for ROUTER_SECRET', [{ env: 'ROUTER_SECRET', source: { type: 'generate', bytes: 32 } }]],
     ['not both', [stdin, { env: 'ROUTER_PASSWORD', source: KEYCHAIN }]],
     ['"environment" must be "production"', [stdin], { environment: 'preview' }],
+    ['manifest: "project" is required', [stdin], { project: undefined }],
+    ['manifest: "project" must be an object', [stdin], { project: PROJECT.projectId }],
+    ['manifest "project": unknown key "name"', [stdin], { project: { ...PROJECT, name: 'x' } }],
+    ['manifest "project": "projectId" is required', [stdin], { project: { orgId: PROJECT.orgId } }],
+    ['manifest "project": "orgId" must be', [stdin], { project: { ...PROJECT, orgId: 'team Test' } }],
+    ['manifest "project": "projectId" must be', [stdin], { project: { ...PROJECT, projectId: 'TestProject01' } }],
   ];
   for (const [message, entries, top] of cases) {
     const r = await runCopy(['--manifest', await manifest(entries, top), '--yes'], { input: VALUES.password });
