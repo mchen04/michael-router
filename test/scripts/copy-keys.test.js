@@ -521,8 +521,10 @@ test('file sources under prohibited roots, shell rc files and relative paths are
     assert.ok(r.stderr.includes(reason), `${p}: ${r.stderr}`);
   }
 
-  // A symlink from an allowed directory into a temp dir is refused after realpath.
-  const outside = await mkdtemp(path.join(os.tmpdir(), 'copy-keys-outside-'));
+  // A symlink from an allowed directory into a temp dir is refused after realpath. The target is
+  // under the script's own $TMPDIR (`tmpdir`), a root it prohibits; this process's os.tmpdir() is
+  // prohibited only by chance (/var/folders on stock macOS), not under another TMPDIR.
+  const outside = await mkdtemp(path.join(tmpdir, 'copy-keys-outside-'));
   try {
     await writeFile(path.join(outside, 'real.env'), `OPENROUTER_API_KEY=${VALUES.openrouter}\n`);
     await symlink(path.join(outside, 'real.env'), path.join(home, 'link.env'));

@@ -1,10 +1,12 @@
 // Task-local PostgreSQL for tests: one throwaway cluster per test file, never a shared or remote
-// server. The binaries come from PG_BIN, else PATH. initdb runs in a mkdtemp directory with trust
-// auth for the superuser over the socket and scram-sha-256 for every other role; the server
-// listens on a unix socket in that directory only (no TCP), with fsync, full-page writes and
-// synchronous commit off. A small sh guard owns the server: when stop() is called, or this process
-// exits and its end of the guard's stdin closes, the guard stops postgres and deletes the
-// directory, so no cluster outlives its test file.
+// server. The binaries come from PG_BIN, else PATH. initdb runs in a mkdtemp directory under
+// os.tmpdir() with trust auth for the superuser over the socket and scram-sha-256 for every other
+// role; the server listens on a unix socket only (no TCP), with fsync, full-page writes and
+// synchronous commit off. The socket goes in the same directory when its path fits in a unix
+// socket address, else in a second private mkdtemp directory under /tmp (a long TMPDIR); both are
+// named mr-pg-*. A small sh guard owns the server: when stop() is called, or this process exits
+// and its end of the guard's stdin closes, the guard stops postgres and deletes both directories,
+// so no cluster outlives its test file.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { access, constants, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -16,13 +18,46 @@ import { applyMigrations } from '../../src/store/migrate.js';
 
 const STARTUP_MS = 30_000;
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
+const PREFIX = 'mr-pg-';
+/** The server's port. It names the socket file (.s.PGSQL.<port>); the URLs leave it implicit. */
+const PORT = 5432;
+// A unix socket path must fit in sockaddr_un.sun_path, which counts the terminating NUL: 104 bytes
+// on macOS, 108 on Linux. The smaller limit applies everywhere, so a path that fits here fits on both.
+const SOCKET_PATH_BYTES = 104;
+/** Where a socket directory goes when the one under os.tmpdir() would be too long. */
+const SHORT_ROOT = '/tmp';
 
-// $1 = the cluster directory, the rest = the postgres command. The watcher subshell turns "stdin
-// closed" into a fast shutdown; the guard waits for postgres to exit, then deletes the directory.
+/** Whether the socket file in `dir` fits in a unix socket address. @param {string} dir */
+const socketFits = (dir) => Buffer.byteLength(path.join(dir, `.s.PGSQL.${PORT}`)) < SOCKET_PATH_BYTES;
+
+/** A new private (0700) mr-pg- directory under the first of os.tmpdir() and /tmp in which the socket fits. */
+async function makeSocketDir() {
+  const roots = [tmpdir(), SHORT_ROOT];
+  // mkdtemp appends six characters to the prefix.
+  const root = roots.find((r) => socketFits(path.join(r, `${PREFIX}XXXXXX`)));
+  if (root === undefined) {
+    throw new Error(`no directory for the PostgreSQL socket: <dir>/.s.PGSQL.${PORT} must be shorter than ${SOCKET_PATH_BYTES} bytes (unix socket path limit, with the NUL) under ${roots.join(' or ')}`);
+  }
+  return mkdtemp(path.join(root, PREFIX));
+}
+
+/**
+ * A private directory with no server in it, whose socket path fits: connecting there fails with
+ * ENOENT at any TMPDIR length (an address that is too long would fail with EINVAL instead).
+ * @returns {Promise<{dir: string, remove: () => Promise<void>}>}
+ */
+export async function emptySocketDir() {
+  const dir = await makeSocketDir();
+  return { dir, remove: () => rm(dir, { recursive: true, force: true }) };
+}
+
+// $1 = the cluster directory, $2 = the socket directory (the same one, or a short one), the rest =
+// the postgres command. The watcher subshell turns "stdin closed" into a fast shutdown; the guard
+// waits for postgres to exit, then deletes both directories.
 // Without job control sh gives a background command /dev/null as its stdin, so the watcher reads
 // the guard's stdin through fd 3; and a background command starts with SIGINT ignored until
 // postgres installs its handlers, so the watcher repeats the signal until postgres is gone.
-const GUARD = `dir=$1; shift
+const GUARD = `dir=$1; sockets=$2; shift 2
 exec 3<&0
 "$@" </dev/null 3<&- &
 pid=$!
@@ -33,7 +68,7 @@ trap '' INT TERM HUP
 wait "$pid"
 status=$?
 kill "$watcher" 2>/dev/null
-rm -rf "$dir"
+rm -rf "$dir" "$sockets"
 exit $status`;
 
 /** @param {string} name */
@@ -121,22 +156,24 @@ export function dumpRouterTables(url) {
 
 /**
  * Start a throwaway cluster.
- * @returns {Promise<{url: string, dir: string, createDatabase: (name: string, options?: {password?: string}) => Promise<string>,
+ * @returns {Promise<{url: string, socketDir: string, createDatabase: (name: string, options?: {password?: string}) => Promise<string>,
  *   stop: () => Promise<void>, output: () => string}>}
  */
 export async function startPostgres() {
   const [initdb, postgres] = [await findBinary('initdb'), await findBinary('postgres')];
-  const dir = await mkdtemp(path.join(tmpdir(), 'mr-pg-'));
+  const dir = await mkdtemp(path.join(tmpdir(), PREFIX));
   const data = path.join(dir, 'data');
+  let socketDir = dir;
   try {
+    if (!socketFits(dir)) socketDir = await makeSocketDir();
     await run(initdb, ['-D', data, '-U', 'postgres', '--auth=trust', '-E', 'UTF8', '--no-locale', '--no-sync', '--no-instructions']);
     await writeFile(path.join(data, 'pg_hba.conf'), 'local all postgres trust\nlocal all all scram-sha-256\n');
   } catch (err) {
-    await rm(dir, { recursive: true, force: true });
+    await Promise.all([dir, socketDir].map((d) => rm(d, { recursive: true, force: true })));
     throw err;
   }
-  const args = ['-D', data, '-k', dir, '-c', 'listen_addresses=', '-c', 'fsync=off', '-c', 'full_page_writes=off', '-c', 'synchronous_commit=off', '-c', 'max_connections=60'];
-  const guard = spawn('/bin/sh', ['-c', GUARD, 'pg-guard', dir, postgres, ...args], {
+  const args = ['-D', data, '-k', socketDir, '-p', String(PORT), '-c', 'listen_addresses=', '-c', 'fsync=off', '-c', 'full_page_writes=off', '-c', 'synchronous_commit=off', '-c', 'max_connections=60'];
+  const guard = spawn('/bin/sh', ['-c', GUARD, 'pg-guard', dir, socketDir, postgres, ...args], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
     stdio: ['pipe', 'ignore', 'pipe'],
   });
@@ -147,7 +184,7 @@ export async function startPostgres() {
     log = (log + d).slice(-16_384); // always drained, so postgres never blocks on a full pipe
   });
   const exited = new Promise((resolve) => guard.once('exit', resolve));
-  const host = encodeURIComponent(dir);
+  const host = encodeURIComponent(socketDir);
   /** @param {string} user @param {string | null} password @param {string} db */
   const urlFor = (user, password, db) =>
     `postgresql://${user}${password === null ? '' : `:${encodeURIComponent(password)}`}@localhost/${db}?host=${host}`;
@@ -179,7 +216,7 @@ export async function startPostgres() {
 
   return {
     url,
-    dir,
+    socketDir,
     /**
      * A fresh database owned by a new non-superuser role of the same name (like a Neon project
      * role: it may create schemas in its database), with a password. Returns its URL.

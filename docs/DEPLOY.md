@@ -324,8 +324,17 @@ mrouter errors --limit 10
 ```
 
 `mrouter health` must show the store as `postgres`, and `--json` must show `store.kind`
-`postgres` and `store.schema_version` 1 (the version step 3.1 applied). Anything else (for
-example `memory`, or a 503) means the deployment does not use the migrated database: stop.
+`postgres`, `store.schema_version` 1 (the version step 3.1 applied) and a `store.latency_ms`.
+Anything else (for example `memory`, or a 503) means the deployment does not use the migrated
+database: stop.
+
+That authenticated health check is the proof that the database works. A request without a
+password is not: the router answers it 401 `missing_credentials` before any store call (only the
+configuration check, 503 `server_misconfigured`, comes first). So that 401 shows that the
+function is deployed, the rewrites reach it and the configuration parses, but not that the
+database is reachable, the login works or the schema is migrated. A wrong password (401
+`invalid_credentials`) does reach the store (a store failure answers 503 first), but it counts a
+failure for your source address, so do not use it as a check.
 
 `mrouter login` checks the password against the router and saves it, with the URL, in the
 `0600` credentials file of your user's config directory (`CLI.md`). Do that only on a machine
@@ -341,7 +350,10 @@ or more characters with the password.
 
 `live-smoke.mjs` runs: health, key status (read only), a non-streaming and a streaming request
 per provider, one tool-call request for Claude, usage, recent errors and one request without
-credentials (expects 401). It sends no wrong password unless you add `--probe-wrong-password`,
+credentials (expects 401 `missing_credentials`; as above, that shows the deployment and its
+configuration answer, not the database). Its database evidence is the authenticated health check
+it starts with; confirm `store.kind`, `store.schema_version` and the latency with
+`mrouter health --json`. It sends no wrong password unless you add `--probe-wrong-password`,
 which ends the run with one (expects 401). Each wrong password counts a failure for the source
 address it comes from, and failures add up per source within `AUTH_WINDOW_SECONDS` (1 hour by
 default, from the first failure; a correct password does not reset them): from the second

@@ -10,22 +10,26 @@ import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { EXIT, main } from '../../scripts/migrate.mjs';
-import { generatedPassword, startPostgres, withClient } from '../helpers/postgres.js';
+import { emptySocketDir, generatedPassword, startPostgres, withClient } from '../helpers/postgres.js';
 
 const SCRIPT = fileURLToPath(new URL('../../scripts/migrate.mjs', import.meta.url));
 const MARKER = 'SENTINEL';
 
 /** @type {Awaited<ReturnType<typeof startPostgres>>} */
 let cluster;
+/** A socket directory nobody serves. @type {Awaited<ReturnType<typeof emptySocketDir>>} */
+let noServer;
 let home = '';
 let serverMajor = '';
 before(async () => {
   cluster = await startPostgres();
+  noServer = await emptySocketDir();
   home = await mkdtemp(path.join(os.tmpdir(), 'migrate-cli-home-'));
   serverMajor = await withClient(cluster.url, async (c) => String(Math.floor(Number((await c.query('SHOW server_version_num')).rows[0].server_version_num) / 10000)));
 });
 after(async () => {
   await cluster?.stop();
+  await noServer?.remove();
   if (home) await rm(home, { recursive: true, force: true });
 });
 
@@ -109,7 +113,7 @@ test('a fresh database: the plan exits 4 and creates nothing, --apply exits 0, t
 
 test('stdin forms: a dotenv document (--var picks the variable, quotes and comments) or one bare URL line', async () => {
   const url = await cluster.createDatabase('mr_cli_forms');
-  const nowhere = generatedUrl('mr_cli_absent', 'localhost', path.join(home, 'no-socket-here'));
+  const nowhere = generatedUrl('mr_cli_absent', 'localhost', noServer.dir);
   const doc = (/** @type {string} */ direct, /** @type {string} */ pooled) => `# comment\n\nDATABASE_URL='${direct}' # direct\nexport DATABASE_URL_POOLED="${pooled}"\nOTHER=x\n`;
   /** @type {[string[], string, number][]} */
   const cases = [
@@ -188,7 +192,7 @@ test('an unreachable server, a wrong password, TLS refused or a password only in
   noPassword.password = '';
   const tls = new URL(url);
   tls.searchParams.set('sslmode', 'require');
-  const gone = generatedUrl('mr_cli_gone', 'localhost', path.join(home, 'no-socket-here'));
+  const gone = generatedUrl('mr_cli_gone', 'localhost', noServer.dir);
   const closedPort = generatedUrl('mr_cli_tcp', '127.0.0.1:1');
   await writeFile(path.join(home, '.pgpass'), `*:*:*:*:${right}\n`, { mode: 0o600 });
   try {

@@ -12,9 +12,11 @@
 // non-streaming and a streaming chat completion with a tiny prompt on its smoke model
 // (src/pricing.json `smoke_models`), plus one tool-call request for claude (a single `get_time`
 // function), then /control/usage?days=1, /control/errors?limit=5 and one request without
-// credentials (expect 401). Only with --probe-wrong-password, last, one wrong password (expect
-// 401): it counts a failed attempt for this host's source, and failures add up within the
-// limiter window. Keys are only read, never set.
+// credentials (expect 401 missing_credentials). The router answers that one before any store
+// call, so it shows only that the deployment answers and its configuration parses; the store
+// evidence is the authenticated health check (docs/DEPLOY.md step 6). Only with
+// --probe-wrong-password, last, one wrong password (expect 401): it counts a failed attempt for
+// this host's source, and failures add up within the limiter window. Keys are only read, never set.
 //
 // Per call it records only: provider, model, mode, HTTP status, x-router-* headers,
 // server-timing, TTFB and total ms, token usage, cost and cost status, finish_reason, the first

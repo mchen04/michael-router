@@ -103,7 +103,9 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
   run the exact code Vercel runs.
 - Tests: `node:test`, all offline against local fakes and a task-local PostgreSQL that
   `test/helpers/postgres.js` starts per test file (binaries from `PG_BIN`, else `PATH`; unix
-  socket only; stopped and deleted afterwards). Real providers only for final smoke.
+  socket only, in the cluster's `mr-pg-*` directory under the system temp directory, or in a
+  private `mr-pg-*` directory under `/tmp` when that socket path would exceed the unix socket
+  limit; stopped and deleted afterwards). Real providers only for final smoke.
 
 ## 3. Repository layout and ownership
 

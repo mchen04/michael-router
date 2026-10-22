@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { containsPassword } from '../../scripts/live-smoke.mjs';
 import { PASSWORD, ROUTER_SECRET, passwordHash } from '../helpers/fixtures.js';
 import { SECRET_MARKER, startRouterStack } from '../helpers/cli.js';
+import { emptySocketDir } from '../helpers/postgres.js';
 import { startDevServer } from '../helpers/processes.js';
 import { startRedirectTrap } from '../helpers/redirect-trap.js';
 
@@ -18,11 +19,15 @@ const CALL_FIELDS = ['cost', 'finish_reason', 'http_status', 'mode', 'model', 'o
 
 /** @type {string} */
 let dir;
+/** @type {Awaited<ReturnType<typeof emptySocketDir>>} */
+let noServer;
 before(async () => {
   dir = await mkdtemp(path.join(os.tmpdir(), 'live-smoke-'));
+  noServer = await emptySocketDir();
 });
 after(async () => {
   await rm(dir, { recursive: true, force: true });
+  await noServer?.remove();
 });
 
 /**
@@ -110,7 +115,7 @@ test('a missing store, an unreachable store and a redirect are reported distinct
   const base = { ROUTER_PASSWORD_HASH: await passwordHash(), ROUTER_SECRET };
   const noStore = await startDevServer(base);
   // A unix-socket directory with no server in it: every connection attempt fails at once.
-  const nowhere = encodeURIComponent(path.join(dir, 'no-postgres-here'));
+  const nowhere = encodeURIComponent(noServer.dir);
   const deadStore = await startDevServer({ ...base, DATABASE_URL: `postgresql://router@localhost/router?host=${nowhere}` });
   const trap = await startRedirectTrap();
   try {

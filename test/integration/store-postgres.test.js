@@ -256,7 +256,7 @@ test('wrong database password: 503, and no response, log line, error or row hold
 
   const rows = JSON.stringify(await dumpRouterTables(url));
   const seen = [r.text, ...h.logs, String(err.stack), JSON.stringify(err), rows].join('\n');
-  for (const secret of [url, wrongUrl, password, wrong, cluster.dir, encodeURIComponent(cluster.dir)]) assert.ok(!seen.includes(secret), 'a secret leaked');
+  for (const secret of [url, wrongUrl, password, wrong, cluster.socketDir, encodeURIComponent(cluster.socketDir)]) assert.ok(!seen.includes(secret), 'a secret leaked');
   assert.ok(!seen.includes('SENTINEL'));
   assert.ok(h.logs.length > 0, 'the request was logged');
 });
