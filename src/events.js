@@ -1,9 +1,8 @@
-// Recent error/auth event log: `mr:v1:events`, LPUSH + LTRIM 0 199, newest first.
+// Recent error/auth event log: the store keeps the 200 newest events (JSON text), listed newest first.
 // Events hold allowlisted metadata only. Their `message` is gateway-authored text chosen by code
 // (EVENT_MESSAGES), never upstream or client text: provider errors and gateway errors can quote
 // the request, and the client already receives that text in its error response.
 
-export const EVENTS_KEY = 'mr:v1:events';
 export const EVENTS_MAX = 200;
 export const EVENT_KINDS = Object.freeze(['auth', 'upstream', 'gateway']);
 
@@ -81,10 +80,7 @@ export function buildEvent({ kind, code, status, upstream_status, provider, mode
  * @param {Record<string, unknown>} event
  */
 export async function appendEvent(store, event) {
-  await store.pipeline([
-    ['LPUSH', EVENTS_KEY, JSON.stringify(event)],
-    ['LTRIM', EVENTS_KEY, 0, EVENTS_MAX - 1],
-  ]);
+  await store.appendEvent(JSON.stringify(event), EVENTS_MAX);
 }
 
 /**
@@ -92,7 +88,7 @@ export async function appendEvent(store, event) {
  * @param {{limit?: number, kind?: string}} [options]
  */
 export async function listEvents(store, { limit = 50, kind } = {}) {
-  const raw = await store.command(['LRANGE', EVENTS_KEY, 0, EVENTS_MAX - 1]);
+  const raw = await store.listEvents(EVENTS_MAX);
   const events = [];
   for (const line of Array.isArray(raw) ? raw : []) {
     try {

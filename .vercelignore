@@ -8,6 +8,9 @@
 !/package-lock.json
 !/vercel.json
 
+# Operator-only code: migrations run from the operator's migrate command, never in the deployment.
+/src/store/migrate.js
+
 # Never upload secret-shaped files, even inside the allowlisted directories.
 .env*
 *.hash

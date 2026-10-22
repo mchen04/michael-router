@@ -109,7 +109,7 @@ test('health: table and JSON; an unreachable router exits 5', async () => {
   assert.match(r.stdout, /^Status +ok$/m);
   assert.match(r.stdout, new RegExp(`^Version +${esc(VERSION)}$`, 'm'));
   assert.match(r.stdout, /^Instance +started \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \(.+\), (cold start|warm)$/m);
-  assert.match(r.stdout, /^Store +upstash, \d+ ms$/m);
+  assert.match(r.stdout, /^Store +memory, \d+ ms$/m);
   assert.match(r.stdout, /^Providers +claude configured, gemini configured, openrouter configured$/m);
   assert.match(r.stdout, /^Round trip +\d+ ms$/m);
   const json = JSON.parse((await mr(['health', '--json'])).stdout);

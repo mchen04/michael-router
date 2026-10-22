@@ -5,7 +5,7 @@ import { hashPassword } from '../../src/auth.js';
 export const PASSWORD = 'pw-SENTINEL-correct-horse-battery-7f3a';
 export const WRONG_PASSWORD = 'pw-SENTINEL-wrong-guess-0b1c';
 export const ROUTER_SECRET = Buffer.from('router-secret-SENTINEL-0123456789abcdefghijkl').toString('base64url');
-export const STORE_TOKEN = 'store-token-SENTINEL-5e6f7a8b9c';
+export const DATABASE_PASSWORD = 'db-password-SENTINEL-5e6f7a8b9c';
 export const ENV_KEYS = Object.freeze({
   ANTHROPIC_API_KEY: 'sk-ant-fake-SENTINEL-env-claude-0001',
   GEMINI_API_KEY: 'AIzaFAKE-SENTINEL-env-gemini-01',

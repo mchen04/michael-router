@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PROVIDER_IDS, loadConfig } from '../../src/config.js';
-import { ENV_KEYS, ROUTER_SECRET, STORE_TOKEN, baseEnv } from '../helpers/fixtures.js';
+import { ENV_KEYS, ROUTER_SECRET, baseEnv } from '../helpers/fixtures.js';
 
 test('a complete dev configuration has no problems and is frozen', async () => {
   const config = loadConfig(await baseEnv());
@@ -62,25 +62,55 @@ test('ROUTER_STORE=memory is refused when VERCEL is set or NODE_ENV=production',
   assert.ok(loadConfig({ ...env, ROUTER_STORE: 'redis' }).problems.includes('ROUTER_STORE'));
 });
 
-test('store configuration: Upstash pairs, partial pairs, production requirements', async () => {
+test('store configuration: DATABASE_URL_POOLED, else DATABASE_URL; TLS required off loopback; URLs and passwords are secrets', async () => {
   const { ROUTER_STORE: _omit, ...env } = await baseEnv();
   const prod = { ...env, VERCEL: '1' };
-  assert.deepEqual([...loadConfig(prod).problems], ['KV_REST_API_URL/KV_REST_API_TOKEN']);
-  assert.deepEqual([...loadConfig(env).problems], ['KV_REST_API_URL/KV_REST_API_TOKEN'], 'no silent memory fallback');
-  const kv = loadConfig({ ...prod, KV_REST_API_URL: 'https://example-db.upstash.io/', KV_REST_API_TOKEN: STORE_TOKEN });
-  assert.deepEqual([...kv.problems], []);
-  assert.deepEqual(kv.store, { kind: 'upstash', url: 'https://example-db.upstash.io', token: STORE_TOKEN });
-  assert.ok(kv.production && kv.trustProxyHeaders);
-  const up = loadConfig({ ...prod, UPSTASH_REDIS_REST_URL: 'https://x.upstash.io', UPSTASH_REDIS_REST_TOKEN: STORE_TOKEN });
-  assert.equal(up.store?.kind, 'upstash');
-  assert.deepEqual([...loadConfig({ ...prod, KV_REST_API_URL: 'https://x.upstash.io' }).problems], ['KV_REST_API_TOKEN']);
-  assert.deepEqual([...loadConfig({ ...prod, KV_REST_API_TOKEN: STORE_TOKEN }).problems], ['KV_REST_API_URL']);
-  assert.deepEqual(
-    [...loadConfig({ ...prod, KV_REST_API_URL: 'http://x.upstash.io', KV_REST_API_TOKEN: STORE_TOKEN }).problems],
-    ['KV_REST_API_URL'],
-    'production requires https',
-  );
-  assert.deepEqual([...loadConfig({ ...env, KV_REST_API_URL: 'http://127.0.0.1:1', KV_REST_API_TOKEN: STORE_TOKEN }).problems], []);
+  const params = '?sslmode=require&channel_binding=require';
+  const pooled = `postgresql://router:db-pw-SENTINEL-pooled@db-pooler.example.test/router${params}`;
+  const direct = `postgresql://router:db%40pw-SENTINEL-direct@db.example.test/router${params}`;
+  assert.deepEqual([...loadConfig(prod).problems], ['DATABASE_URL_POOLED/DATABASE_URL']);
+  assert.deepEqual([...loadConfig(env).problems], ['DATABASE_URL_POOLED/DATABASE_URL'], 'no silent memory fallback');
+
+  const both = loadConfig({ ...prod, DATABASE_URL_POOLED: pooled, DATABASE_URL: direct });
+  assert.deepEqual([...both.problems], []);
+  assert.deepEqual(both.store, {
+    kind: 'postgres',
+    envName: 'DATABASE_URL_POOLED',
+    connectionString: 'postgresql://router:db-pw-SENTINEL-pooled@db-pooler.example.test/router',
+    ssl: true,
+    channelBinding: true,
+  });
+  for (const secret of [pooled, direct, 'db-pw-SENTINEL-pooled', 'db%40pw-SENTINEL-direct', 'db@pw-SENTINEL-direct']) {
+    assert.ok(both.secrets.includes(secret), secret);
+  }
+  assert.equal(loadConfig({ ...prod, DATABASE_URL: direct }).store?.envName, 'DATABASE_URL');
+
+  const problems = (/** @type {Record<string, string>} */ e, /** @type {string} */ url) => [...loadConfig({ ...e, DATABASE_URL: url }).problems];
+  const remote = 'postgresql://router:pw@db.example.test/router';
+  for (const query of ['', '?sslmode=disable', '?sslmode=allow', '?sslmode=prefer', '?sslmode=no-verify']) {
+    assert.deepEqual(problems(prod, remote + query), ['DATABASE_URL'], `production refuses "${query}"`);
+    assert.deepEqual(problems(env, remote + query), ['DATABASE_URL'], `a remote host needs TLS in development too: "${query}"`);
+  }
+  for (const query of ['?sslmode=verify-full', '?sslmode=verify-ca&channel_binding=disable']) assert.deepEqual(problems(prod, remote + query), []);
+  assert.equal(loadConfig({ ...prod, DATABASE_URL: `${remote}?sslmode=require&channel_binding=disable` }).store?.channelBinding, false);
+  for (const query of ['?sslmode=require&sslrootcert=/x.pem', '?sslmode=require&ssl=true', '?sslmode=require&uselibpqcompat=true', '?sslmode=require&channel_binding=maybe']) {
+    assert.deepEqual(problems(prod, remote + query), ['DATABASE_URL'], `pg would override the TLS settings: "${query}"`);
+  }
+  for (const url of ['https://db.example.test/router?sslmode=require', 'not a url', 'postgresql://[bad/router']) {
+    assert.deepEqual(problems(prod, url), ['DATABASE_URL']);
+    assert.ok(loadConfig({ ...prod, DATABASE_URL: url }).secrets.includes(url), 'a refused value is still scrubbed');
+  }
+
+  // Development (tests): loopback hosts and unix-socket directories may skip TLS; production never.
+  const socket = 'postgresql://router@localhost/router?host=%2Fvar%2Frun%2Fpostgresql';
+  for (const url of [socket, 'postgresql://router@127.0.0.1:5433/router', 'postgres://router@[::1]/router?sslmode=disable', 'postgresql://router@localhost/router']) {
+    const c = loadConfig({ ...env, DATABASE_URL: url });
+    assert.deepEqual([...c.problems], [], url);
+    assert.deepEqual([c.store?.kind, /** @type {any} */ (c.store).ssl, /** @type {any} */ (c.store).channelBinding], ['postgres', false, false], url);
+    assert.deepEqual(problems(prod, url), ['DATABASE_URL'], url);
+  }
+  assert.deepEqual(problems(env, `${socket}&channel_binding=require`), ['DATABASE_URL'], 'channel binding needs TLS');
+  assert.equal(/** @type {any} */ (loadConfig({ ...env, DATABASE_URL: socket }).store).connectionString, socket);
 });
 
 test('limiter tunables: defaults, overrides, invalid values named', async () => {

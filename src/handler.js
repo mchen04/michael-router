@@ -26,7 +26,7 @@ import { createLogger } from './log.js';
 import { UPSTREAM_TIMEOUT_MS, chatCompletions, listModels, verifyProviderKey as defaultVerifyProviderKey } from './proxy.js';
 import { createRedactor } from './redact.js';
 import { resolveSource } from './source.js';
-import { StoreError, createStore, failClosed } from './store/index.js';
+import { STORE_METHODS, StoreError, createStore, failClosed } from './store/index.js';
 
 /** @type {{method: string, path: string, handler: (ctx: any) => Response | Promise<Response>}[]} */
 export const ROUTES = [
@@ -122,7 +122,9 @@ const round1 = (ms) => Math.round(ms * 10) / 10;
  *   upstreamTimeoutMs?: number,
  *   logSink?: (line: string) => void,
  *   errorSink?: (line: string) => void,
- * }} [options] everything except `env` is for tests/dev
+ *   attachDatabasePool?: (pool: import('pg').Pool) => void,
+ * }} [options] everything except `env`, `waitUntil` and `attachDatabasePool` (Vercel's, which closes
+ *   idle database clients before an instance suspends) is for tests/dev
  */
 export function createHandler(options = {}) {
   const config = loadConfig(options.env ?? {});
@@ -132,7 +134,7 @@ export function createHandler(options = {}) {
   const baseRedactor = createRedactor(config.secrets);
   const problems = config.problems;
   const configured = problems.length === 0;
-  const store = !configured ? null : options.store ? failClosed(options.store) : createStore(config.store, { now });
+  const store = !configured ? null : options.store ? failClosed(options.store) : createStore(config.store, { onPool: options.attachDatabasePool });
   const authenticator = configured
     ? createAuthenticator({ passwordHash: config.passwordHash, password: config.password, verifyPassword: options.verifyPassword })
     : null;
@@ -279,7 +281,7 @@ export function createHandler(options = {}) {
     // 3. Correct.
     ctx.waitUntil(limiter.release(ctx.source.id));
     ctx.authenticated = true;
-    ctx.keys = keyResolver.resolve(pre.keysHash, (provider) =>
+    ctx.keys = keyResolver.resolve(pre.keys, (provider) =>
       ctx.events.record({
         kind: 'gateway',
         code: 'provider_key_undecryptable',
@@ -330,14 +332,17 @@ export function createHandler(options = {}) {
  * @returns {import('./store/index.js').Store}
  */
 function timed(store, timings) {
-  /** @param {(arg: any) => Promise<any>} fn */
-  const wrap = (fn) => async (/** @type {any} */ arg) => {
-    const t = performance.now();
-    try {
-      return await fn(arg);
-    } finally {
-      timings.store += performance.now() - t;
-    }
-  };
-  return { kind: store.kind, command: wrap(store.command), pipeline: wrap(store.pipeline), multi: wrap(store.multi) };
+  /** @type {any} */
+  const out = { kind: store.kind };
+  for (const name of STORE_METHODS) {
+    out[name] = async (/** @type {unknown[]} */ ...args) => {
+      const t = performance.now();
+      try {
+        return await /** @type {any} */ (store)[name](...args);
+      } finally {
+        timings.store += performance.now() - t;
+      }
+    };
+  }
+  return out;
 }

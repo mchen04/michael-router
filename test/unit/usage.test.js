@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { USAGE_TTL_SECONDS, aggregateUsage, costStatus, usageDays, usageKey } from '../../src/usage.js';
+import { aggregateUsage, costStatus, usageDays } from '../../src/usage.js';
 import { bearer, fakeClock } from '../helpers/fixtures.js';
 import { makeHarness } from '../helpers/harness.js';
 
@@ -9,8 +9,8 @@ const NOW = Date.parse('2026-10-22T06:30:00Z');
 
 /** @param {any} store @param {string} day @param {string} provider @param {string} model @param {Record<string, number>} metrics */
 function seed(store, day, provider, model, metrics) {
-  for (const [metric, n] of Object.entries(metrics)) store.exec(['HINCRBY', usageKey(day), `${provider}\t${model}\t${metric}`, n]);
-  store.exec(['EXPIRE', usageKey(day), USAGE_TTL_SECONDS]);
+  const entries = Object.entries(metrics).map(([metric, value]) => ({ provider, model, metric, value }));
+  return store.addUsage(day, entries, { retainFromDay: '2025-01-01' });
 }
 
 test('usageDays: UTC days, days/since bounds (max 400), default 30', () => {
@@ -33,16 +33,28 @@ test('costStatus edge cases (the common classes are checked through GET /control
   assert.equal(costStatus({ requests: 1 }), 'unknown', 'unclassified requests are never a priced zero');
 });
 
-test('aggregateUsage ignores malformed fields and sums arbitrary well-formed metrics', () => {
-  const out = aggregateUsage([
-    ['claude\tclaude-x\trequests', '2', 'claude\tclaude-x\tusage_missing', '1', 'bad-field', '5', 'claude\tclaude-x\tprompt_tokens', 'NaN'],
-    null,
-    ['claude\tclaude-x\trequests', '3', 'claude\tclaude-x\tprovider', '9', 'claude\tclaude-x\tBad-Metric', '1'],
-  ]);
+test('aggregateUsage ignores malformed rows and sums arbitrary well-formed metrics', () => {
+  const row = (/** @type {string} */ metric, /** @type {unknown} */ value) => ({ day: '2026-10-21', provider: 'claude', model: 'claude-x', metric, value });
+  const out = aggregateUsage(
+    /** @type {any} */ ([
+      row('requests', 2),
+      row('usage_missing', 1),
+      { day: '2026-10-21', provider: 'claude', model: null, metric: 'requests', value: 5 },
+      row('prompt_tokens', NaN),
+      row('completion_tokens', 2 ** 53),
+      row('cached_tokens', '7'),
+      null,
+      row('requests', 3),
+      row('provider', 9),
+      row('Bad-Metric', 1),
+    ]),
+  );
   assert.equal(out.models.length, 1);
   assert.equal(out.models[0].requests, 5);
   assert.equal(out.models[0].usage_missing, 1);
   assert.equal(out.models[0].prompt_tokens, 0);
+  assert.equal(out.models[0].completion_tokens, 0, 'an unsafe integer is malformed');
+  assert.equal(out.models[0].cached_tokens, 0);
   assert.equal(out.models[0].provider, 'claude');
 });
 
@@ -51,15 +63,15 @@ test('GET /control/usage: per-model sums, cost_status, provider and total rollup
   const h = await makeHarness({ clock });
   const s = h.store;
   // in range for days=3: 2026-10-20 .. 2026-10-22 (UTC)
-  seed(s, '2026-10-22', 'openrouter', 'anthropic/claude-sonnet-4.5', { requests: 2, prompt_tokens: 100, completion_tokens: 50, cost_nusd: 1500000, cost_exact: 2 });
-  seed(s, '2026-10-21', 'openrouter', 'anthropic/claude-sonnet-4.5', { requests: 1, prompt_tokens: 10, completion_tokens: 5, cost_nusd: 500000, cost_exact: 1 });
-  seed(s, '2026-10-21', 'claude', 'claude-haiku-4-5', { requests: 4, prompt_tokens: 400, cached_tokens: 100, completion_tokens: 40, cost_nusd: 2000000, cost_estimated: 4 });
-  seed(s, '2026-10-20', 'gemini', 'gemini-2.5-flash', { requests: 3, errors: 1, prompt_tokens: 30, completion_tokens: 3, reasoning_tokens: 7, cost_nusd: 100, cost_estimated: 2, cost_unknown: 1 });
-  seed(s, '2026-10-20', 'gemini', 'gemini-unknown-model', { requests: 1, prompt_tokens: 5, cost_unknown: 1, usage_missing: 1 });
-  seed(s, '2026-10-22', 'openrouter', 'openrouter/auto', { requests: 1, cost_nusd: 10, cost_exact: 1 });
-  seed(s, '2026-10-21', 'openrouter', 'openrouter/auto', { requests: 1, cost_nusd: 20, cost_estimated: 1 });
+  await seed(s, '2026-10-22', 'openrouter', 'anthropic/claude-sonnet-4.5', { requests: 2, prompt_tokens: 100, completion_tokens: 50, cost_nusd: 1500000, cost_exact: 2 });
+  await seed(s, '2026-10-21', 'openrouter', 'anthropic/claude-sonnet-4.5', { requests: 1, prompt_tokens: 10, completion_tokens: 5, cost_nusd: 500000, cost_exact: 1 });
+  await seed(s, '2026-10-21', 'claude', 'claude-haiku-4-5', { requests: 4, prompt_tokens: 400, cached_tokens: 100, completion_tokens: 40, cost_nusd: 2000000, cost_estimated: 4 });
+  await seed(s, '2026-10-20', 'gemini', 'gemini-2.5-flash', { requests: 3, errors: 1, prompt_tokens: 30, completion_tokens: 3, reasoning_tokens: 7, cost_nusd: 100, cost_estimated: 2, cost_unknown: 1 });
+  await seed(s, '2026-10-20', 'gemini', 'gemini-unknown-model', { requests: 1, prompt_tokens: 5, cost_unknown: 1, usage_missing: 1 });
+  await seed(s, '2026-10-22', 'openrouter', 'openrouter/auto', { requests: 1, cost_nusd: 10, cost_exact: 1 });
+  await seed(s, '2026-10-21', 'openrouter', 'openrouter/auto', { requests: 1, cost_nusd: 20, cost_estimated: 1 });
   // out of range for days=3
-  seed(s, '2026-10-19', 'claude', 'claude-haiku-4-5', { requests: 100, cost_nusd: 999999999, cost_estimated: 100 });
+  await seed(s, '2026-10-19', 'claude', 'claude-haiku-4-5', { requests: 100, cost_nusd: 999999999, cost_estimated: 100 });
 
   const r = await h.call('/control/usage?days=3', { headers: bearer() });
   assert.equal(r.status, 200);

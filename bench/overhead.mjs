@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// Gateway overhead benchmark (DESIGN §12). Mocked evidence: a local fake upstream and a fake
-// Upstash, never a real provider or store.
+// Gateway overhead benchmark (DESIGN §12). Mocked evidence: a local fake upstream and the
+// in-process memory store, never a real provider or store.
 //
-//   node bench/overhead.mjs --out DIR [--store-delays 0,3] [--n 1000] [--n-concurrent 2000]
+//   node bench/overhead.mjs --out DIR [--store-delays 0] [--n 1000] [--n-concurrent 2000]
 //        [--warmup 100] [--concurrency 8] [--upstream-delay-ms 0] [--chunks 8] [--interval-ms 1]
 //        [--resamples 2000] [--cpu-prof]
 //
-// Processes: bench/fake-upstream.mjs; per store delay one dev/fake-upstash.js (--delay-ms models
-// the store round trip) and one dev/server.js configured like production apart from TLS: the
-// Upstash REST store protocol, a scrypt password hash with the production parameters (logN 15),
-// fake provider keys, all generated per run. This process is the client (node:http keep-alive).
+// Processes: bench/fake-upstream.mjs and one dev/server.js configured like production apart from
+// TLS and the store (ROUTER_STORE=memory, so the only store delay is 0): a scrypt password hash
+// with the production parameters (logN 15), fake provider keys, all generated per run. This process is the client (node:http keep-alive).
 //
 // Targets, taken back to back in every iteration (ABBA order, reversed on odd iterations, so
 // drift cancels within each pair):
@@ -50,7 +49,7 @@ import {
 
 const SPEC = /** @type {const} */ ({
   out: { type: 'string' },
-  'store-delays': { type: 'ints', default: [0, 3], max: 1000 },
+  'store-delays': { type: 'ints', default: [0], max: 0 },
   n: { type: 'int', default: 1000, min: 1 },
   'n-concurrent': { type: 'int', default: 2000, min: 1 },
   warmup: { type: 'int', default: 100 },
@@ -259,7 +258,6 @@ async function main() {
   };
   // Per-run secrets; none is ever written out.
   const password = `bench-${randomBytes(18).toString('base64url')}`;
-  const storeToken = randomBytes(16).toString('hex');
   const passwordHash = await hashPassword(password);
   const routerSecret = randomBytes(32).toString('base64url');
   const profDir = path.join(out, 'cpu-prof');
@@ -279,14 +277,11 @@ async function main() {
   const rawBlocks = [];
   try {
     for (const delay of config.store_delays_ms) {
-      const upstash = await startNode([path.join(ROOT, 'dev/fake-upstash.js'), '--port', '0', '--token', storeToken, '--delay-ms', String(delay)], {});
-      procs.push(upstash);
       const nodeFlags = config.cpu_prof ? ['--cpu-prof', '--cpu-prof-dir', path.join(profDir, `store-${delay}ms`)] : [];
       const router = await startNode([...nodeFlags, path.join(ROOT, 'dev/server.js'), '--port', '0'], {
         ROUTER_PASSWORD_HASH: passwordHash,
         ROUTER_SECRET: routerSecret,
-        KV_REST_API_URL: upstash.url,
-        KV_REST_API_TOKEN: storeToken,
+        ROUTER_STORE: 'memory',
         ...KEYS,
         ANTHROPIC_BASE_URL: upstream.url,
         GEMINI_BASE_URL: upstream.url,

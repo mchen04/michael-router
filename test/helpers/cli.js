@@ -8,8 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeProviders } from '../../dev/fake-providers.js';
-import { ENV_KEYS, PASSWORD, ROUTER_SECRET, STORE_TOKEN, passwordHash } from './fixtures.js';
-import { startDevServer, startFakeUpstash } from './processes.js';
+import { ENV_KEYS, PASSWORD, ROUTER_SECRET, passwordHash } from './fixtures.js';
+import { startDevServer } from './processes.js';
 
 export const CLI = fileURLToPath(new URL('../../cli/mrouter.js', import.meta.url));
 /** Every fixture secret contains this marker; CLI output never may. */
@@ -152,17 +152,16 @@ export async function finishCliSuite() {
 }
 
 /**
- * A router (dev/server.js process) with fake Upstash and the fake providers, every provider
+ * A router (one dev/server.js process, memory store) with the fake providers, every provider
  * configured with a fake env key.
  * @param {Record<string, string>} [env]
  */
 export async function startRouterStack(env = {}) {
-  const [fake, upstash] = await Promise.all([startFakeProviders(), startFakeUpstash(STORE_TOKEN)]);
+  const fake = await startFakeProviders();
   const dev = await startDevServer({
     ROUTER_PASSWORD_HASH: await passwordHash(),
     ROUTER_SECRET,
-    KV_REST_API_URL: upstash.url,
-    KV_REST_API_TOKEN: STORE_TOKEN,
+    ROUTER_STORE: 'memory',
     ...ENV_KEYS,
     ...fake.env,
     ...env,
@@ -171,7 +170,7 @@ export async function startRouterStack(env = {}) {
     fake,
     url: dev.url,
     async stop() {
-      await Promise.all([dev.stop(), upstash.stop(), fake.close()]);
+      await Promise.all([dev.stop(), fake.close()]);
     },
   };
 }

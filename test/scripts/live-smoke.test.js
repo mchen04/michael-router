@@ -8,7 +8,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { containsPassword } from '../../scripts/live-smoke.mjs';
-import { PASSWORD, ROUTER_SECRET, STORE_TOKEN, passwordHash } from '../helpers/fixtures.js';
+import { PASSWORD, ROUTER_SECRET, passwordHash } from '../helpers/fixtures.js';
 import { SECRET_MARKER, startRouterStack } from '../helpers/cli.js';
 import { startDevServer } from '../helpers/processes.js';
 import { startRedirectTrap } from '../helpers/redirect-trap.js';
@@ -109,13 +109,15 @@ test('records every check with only the allowed fields, labelled as mocked, and 
 test('a missing store, an unreachable store and a redirect are reported distinctly, with exit 3', async () => {
   const base = { ROUTER_PASSWORD_HASH: await passwordHash(), ROUTER_SECRET };
   const noStore = await startDevServer(base);
-  const deadStore = await startDevServer({ ...base, KV_REST_API_URL: 'http://127.0.0.1:1', KV_REST_API_TOKEN: STORE_TOKEN });
+  // A unix-socket directory with no server in it: every connection attempt fails at once.
+  const nowhere = encodeURIComponent(path.join(dir, 'no-postgres-here'));
+  const deadStore = await startDevServer({ ...base, DATABASE_URL: `postgresql://router@localhost/router?host=${nowhere}` });
   const trap = await startRedirectTrap();
   try {
     const missing = await runSmoke(noStore.url, 'no-store');
     assert.equal(missing.code, 3);
-    assert.match(missing.stderr, /store missing or invalid \(503 server_misconfigured: KV_REST_API_URL\/KV_REST_API_TOKEN\)/);
-    assert.match(missing.stderr, /UPSTASH_REDIS_REST_URL\/UPSTASH_REDIS_REST_TOKEN/);
+    assert.match(missing.stderr, /store missing or invalid \(503 server_misconfigured: DATABASE_URL_POOLED\/DATABASE_URL\)/);
+    assert.match(missing.stderr, /Set DATABASE_URL_POOLED \(preferred\) or DATABASE_URL/);
     const missingEv = JSON.parse(await readFile(missing.out, 'utf8'));
     assert.equal(missingEv.result, 'NOT USABLE: store_missing');
     assert.deepEqual(missingEv.calls, [], 'nothing else is sent');

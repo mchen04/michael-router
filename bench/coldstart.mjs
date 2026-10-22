@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Cold-start benchmark (DESIGN §12). Mocked evidence: a local fake Upstash, no provider calls.
+// Cold-start benchmark (DESIGN §12). Mocked evidence: the in-process memory store, no provider calls.
 //
 //   node bench/coldstart.mjs --out DIR [--n 30] [--import-n 30] [--warmup 3] [--store-delay-ms 0]
 //
 // Fresh processes, alternating in order on every iteration:
 //   hello   bench/hello-server.mjs (the node:http baseline)
-//   router  dev/server.js configured like production apart from TLS (Upstash REST store protocol
-//           against dev/fake-upstash.js, scrypt logN 15 password hash, fake provider keys)
+//   router  dev/server.js configured like production apart from TLS and the store
+//           (ROUTER_STORE=memory, so the only store delay is 0; scrypt logN 15 password hash,
+//           fake provider keys)
 // For each: spawn -> "listening" line, spawn -> first successful GET /v1/models with the password,
 // that first request alone, and a second request on the same connection (first-request costs
 // such as scrypt and the first store connection show as first minus second). The router's first
@@ -31,7 +32,7 @@ const SPEC = /** @type {const} */ ({
   n: { type: 'int', default: 30, min: 1 },
   'import-n': { type: 'int', default: 30, min: 1 },
   warmup: { type: 'int', default: 3 },
-  'store-delay-ms': { type: 'int', default: 0, max: 1000 },
+  'store-delay-ms': { type: 'int', default: 0, max: 0 },
 });
 const KEYS = { ANTHROPIC_API_KEY: 'sk-ant-fake-bench-0001', GEMINI_API_KEY: 'AIzaFAKE-bench-0001' };
 const IMPORTS = ['data:text/javascript,', 'node:http', '@vercel/functions', pathToFileURL(path.join(ROOT, 'src/handler.js')).href, pathToFileURL(path.join(ROOT, 'api/router.js')).href];
@@ -145,9 +146,7 @@ async function main() {
   const meta = runMeta(import.meta.url);
   meta.config = { n: flags.n, import_n: flags['import-n'], warmup: flags.warmup, store_delay_ms: flags['store-delay-ms'], scrypt: 'logN 15, r 8, p 1 (production default)' };
   const password = `bench-${randomBytes(18).toString('base64url')}`;
-  const storeToken = randomBytes(16).toString('hex');
   const passwordHash = await hashPassword(password);
-  const upstash = await startNode([path.join(ROOT, 'dev/fake-upstash.js'), '--port', '0', '--token', storeToken, '--delay-ms', String(meta.config.store_delay_ms)], {});
   const kinds = {
     hello: { args: [path.join(ROOT, 'bench/hello-server.mjs')], env: {} },
     router: {
@@ -155,8 +154,7 @@ async function main() {
       env: {
         ROUTER_PASSWORD_HASH: passwordHash,
         ROUTER_SECRET: randomBytes(32).toString('base64url'),
-        KV_REST_API_URL: upstash.url,
-        KV_REST_API_TOKEN: storeToken,
+        ROUTER_STORE: 'memory',
         ...KEYS,
         ANTHROPIC_BASE_URL: 'https://127.0.0.1:1',
         GEMINI_BASE_URL: 'https://127.0.0.1:1',
@@ -169,28 +167,24 @@ async function main() {
   /** @type {Record<string, any[]>} */
   const importRuns = Object.fromEntries(IMPORT_NAMES.map((n) => [n, []]));
   const loads = { starts_before: hostLoad(), starts_after: hostLoad(), imports_after: hostLoad() };
-  try {
-    process.stderr.write(`cold starts: ${flags.warmup} warm-up + ${flags.n} per kind\n`);
-    for (let i = -flags.warmup; i < flags.n; i++) {
-      const order = /** @type {const} */ (i % 2 === 0 ? ['hello', 'router'] : ['router', 'hello']);
-      for (const kind of order) {
-        const r = await coldStart(kinds[kind].args, kinds[kind].env, password);
-        if (i >= 0) runs[kind].push(roundAll(r));
-      }
+  process.stderr.write(`cold starts: ${flags.warmup} warm-up + ${flags.n} per kind\n`);
+  for (let i = -flags.warmup; i < flags.n; i++) {
+    const order = /** @type {const} */ (i % 2 === 0 ? ['hello', 'router'] : ['router', 'hello']);
+    for (const kind of order) {
+      const r = await coldStart(kinds[kind].args, kinds[kind].env, password);
+      if (i >= 0) runs[kind].push(roundAll(r));
     }
-    loads.starts_after = hostLoad();
-    process.stderr.write(`imports: ${flags.warmup} warm-up + ${flags['import-n']} per module\n`);
-    for (let i = -flags.warmup; i < flags['import-n']; i++) {
-      for (let j = 0; j < IMPORTS.length; j++) {
-        const k = (j + Math.max(i, 0)) % IMPORTS.length; // rotate the order every iteration
-        const r = await importOnce(IMPORTS[k]);
-        if (i >= 0) importRuns[IMPORT_NAMES[k]].push(roundAll(/** @type {any} */ (r)));
-      }
-    }
-    loads.imports_after = hostLoad();
-  } finally {
-    await upstash.stop();
   }
+  loads.starts_after = hostLoad();
+  process.stderr.write(`imports: ${flags.warmup} warm-up + ${flags['import-n']} per module\n`);
+  for (let i = -flags.warmup; i < flags['import-n']; i++) {
+    for (let j = 0; j < IMPORTS.length; j++) {
+      const k = (j + Math.max(i, 0)) % IMPORTS.length; // rotate the order every iteration
+      const r = await importOnce(IMPORTS[k]);
+      if (i >= 0) importRuns[IMPORT_NAMES[k]].push(roundAll(/** @type {any} */ (r)));
+    }
+  }
+  loads.imports_after = hostLoad();
 
   const measures = ['listening_ms', 'first_response_ms', 'first_request_ms', 'second_request_ms'];
   const st = (/** @type {number} */ idx) =>

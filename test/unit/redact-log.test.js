@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EXCEPTION_FIELDS, LOG_FIELDS, createLogger } from '../../src/log.js';
 import { REDACTED, createRedactor, scrub } from '../../src/redact.js';
-import { ENV_KEYS, PASSWORD, ROUTER_SECRET, STORE_TOKEN } from '../helpers/fixtures.js';
+import { ENV_KEYS, PASSWORD, ROUTER_SECRET, DATABASE_PASSWORD } from '../helpers/fixtures.js';
 
 test('redaction patterns: sk-ant, sk-or, AIza, Bearer, long hex and base64 tokens', () => {
   const cases = [
@@ -31,11 +31,11 @@ test('redaction leaves ordinary text, model ids and short tokens alone', () => {
 });
 
 test('configured values and the presented bearer are replaced, longest first', () => {
-  const r = createRedactor([...Object.values(ENV_KEYS), ROUTER_SECRET, STORE_TOKEN, 'abc', null, undefined]);
+  const r = createRedactor([...Object.values(ENV_KEYS), ROUTER_SECRET, DATABASE_PASSWORD, 'abc', null, undefined]);
   const withBearer = r.with([PASSWORD]);
-  const text = `p=${PASSWORD} s=${ROUTER_SECRET} t=${STORE_TOKEN} k=${ENV_KEYS.GEMINI_API_KEY} abc stays`;
+  const text = `p=${PASSWORD} s=${ROUTER_SECRET} t=${DATABASE_PASSWORD} k=${ENV_KEYS.GEMINI_API_KEY} abc stays`;
   const out = withBearer.scrub(text);
-  for (const secret of [PASSWORD, ROUTER_SECRET, STORE_TOKEN, ENV_KEYS.GEMINI_API_KEY]) assert.ok(!out.includes(secret), out);
+  for (const secret of [PASSWORD, ROUTER_SECRET, DATABASE_PASSWORD, ENV_KEYS.GEMINI_API_KEY]) assert.ok(!out.includes(secret), out);
   assert.equal(out, `p=${REDACTED} s=${REDACTED} t=${REDACTED} k=${REDACTED} abc stays`);
   assert.equal(r.scrub(`p=${PASSWORD}`), `p=${PASSWORD}`, 'the bearer is only scrubbed once presented');
   assert.equal(scrub(undefined), '');

@@ -27,7 +27,8 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
 ## 2. Stack
 
 - Plain Vercel project, no framework. Node.js runtime (24.x), ESM JavaScript (`"type": "module"`),
-  JSDoc types, zero runtime dependencies except `@vercel/functions` (for `waitUntil`).
+  JSDoc types, two runtime dependencies: `@vercel/functions` (`waitUntil`, `attachDatabasePool`)
+  and `pg` (node-postgres).
 - One function, `api/router.js`, receives every API path via `vercel.json` rewrites, so all
   traffic shares one warm instance pool. Whether Vercel shows the function the original or the
   rewritten URL is not documented, so the rewrite carries the route explicitly:
@@ -35,13 +36,62 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
   `/api/router?__route=control/:path*`. The handler uses `__route` when the pathname is
   `/api/router`, else the pathname (dev server). `supportsCancellation: true`, `maxDuration: 300`.
   Static landing page lives in `public/` (`"framework": null`, `outputDirectory: "public"`).
-- Durable store: Redis over the Upstash REST protocol (Vercel Marketplace "Upstash for Redis",
-  free plan). Accepts `KV_REST_API_URL`/`KV_REST_API_TOKEN` or
-  `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`. Tests use an in-repo fake Upstash REST
-  server (mocked evidence, labelled as such).
+- Durable store: PostgreSQL (Neon in production, through its pooled endpoint) over the wire
+  protocol with `pg`, behind the domain interface in `src/store/contract.js`
+  (`src/store/postgres.js`; `src/store/memory.js` implements the same interface for
+  `ROUTER_STORE=memory` and in-process tests). Every router table lives in schema
+  `michael_router`; nothing outside it is read for router state or changed.
+  - Pool: `max` 5, idle clients closed after 10 s, `connectionTimeoutMillis` 5000 (covers a cold
+    compute wake and waiting for a pool client), `application_name=michael-router`. On Vercel the
+    pool is handed to `attachDatabasePool`, which closes idle clients before the instance suspends.
+  - Statements: parameterized, every table written `michael_router.<table>` (no dependence on
+    `search_path`), one autocommitted statement per method (events: insert, then trim). No `SET`,
+    interactive transactions or session advisory locks, so they work through PgBouncer in
+    transaction mode; no `statement_timeout` or `options` startup parameters.
+  - Atomicity: an `auth_sources` statement locks only the source's row (`INSERT … ON CONFLICT DO
+    UPDATE`, or `SELECT … FOR UPDATE` in a release), so concurrent requests on one source
+    serialize on that row and every count is exact across instances. Usage upserts lock their
+    rows in one byte order (`ORDER BY … COLLATE "C"`), and the sweeps and trims take their locks
+    with `SKIP LOCKED`: no statement waits on more than one lock, so none can deadlock.
+  - Sweep: each wrong-password statement also deletes up to 100 dead `auth_sources` rows of other
+    sources (every end time passed), oldest first, skipping locked rows; a release deletes its own
+    row once nothing in it is active. The table stays bounded by the sources seen recently.
+  - Timeouts (fail closed): acquiring a client is bounded by 5000 ms, then each method's
+    statements by 1500 ms on the client side. A late call rejects and its client is destroyed
+    (`release(true)`), never reused. `failClosed` adds an outer 7000 ms timer. A late statement
+    may still finish on the server; a precheck slot it took expires with its 60 s end time.
+  - TLS: `sslmode` `require`, `verify-ca` or `verify-full` connects with
+    `ssl: {rejectUnauthorized: true}` (verify-full semantics with the system CAs; the URL's
+    `sslmode` and `channel_binding` are removed before pg sees it, so pg's sslmode handling and
+    its warning never apply). `channel_binding=require` or `prefer` enables pg's
+    `enableChannelBinding` (SCRAM-SHA-256-PLUS with tls-server-end-point when the server offers
+    it); pg 8.23 does not refuse a server that offers no binding, so certificate and host
+    verification is what binds the connection to the server. Production refuses a URL whose
+    `sslmode` is missing, `disable`, `allow` or `prefer`. Outside production, TLS may be off only
+    for a loopback host or a unix-socket `host=` directory (tests).
+  - Errors: every pg failure becomes a generic `StoreError` (never the URL, host, user, password,
+    SQL or parameters), keeping only a 5-character SQLSTATE as a property. `bigint` values arrive
+    as text and are converted with `Number`; an unsafe integer is a malformed row.
+  - Schema (`src/store/migrations.js`, frozen and append-only): `schema_migrations (version,
+    name, checksum, applied_at)`; `auth_sources` (one row per source: failure count and window
+    end, wait end, block end, strikes and their end, inflight and its end, `expires_ms` = the
+    latest end, indexed for the sweep; end times are epoch ms from the router's clock);
+    `provider_keys (provider, record, updated_at)`; `usage_daily (day, provider, model, metric,
+    value bigint)`; `events (id identity, event json)` (`json` keeps the stored text exactly).
+  - Migrations (`src/store/migrate.js`) run only from the operator's migrate command, never at
+    request time; `ping` (health) fails closed when the schema is missing or older than the code
+    needs. Planning runs in a `BEGIN READ ONLY` transaction. Applying runs each pending migration
+    in its own transaction: `SET LOCAL` lock and statement timeouts, `pg_advisory_xact_lock` on
+    a fixed key (works through a pooler), re-read the applied versions under the lock, run the
+    SQL, record `{version, name, sha256 checksum}`, commit. Every statement is additive and
+    confined to `michael_router` (checked statically by the tests). Refused, changing nothing:
+    the schema holds objects but no `schema_migrations`; the database records a version the code
+    does not know (it is newer); a recorded checksum differs from the code's.
 - Local adapter `dev/server.js` wraps the same handler with `node:http` so tests and benchmarks
   run the exact code Vercel runs.
-- Tests: `node:test`, all offline against local fakes. Real providers only for final smoke.
+- Tests: `node:test`, all offline against local fakes and a task-local PostgreSQL that
+  `test/helpers/postgres.js` starts per test file (binaries from `PG_BIN`, else `PATH`; unix
+  socket only; stopped and deleted afterwards). Real providers only for final smoke.
 
 ## 3. Repository layout and ownership
 
@@ -98,8 +148,8 @@ gitignored `evidence/` directory or outside the repository; only summaries are c
 |------|----------|---------|
 | `ROUTER_PASSWORD_HASH` or `ROUTER_PASSWORD` | exactly one | The access password exists only as a Vercel sensitive environment variable — never in repository files, history, logs or command arguments. Preferred: `ROUTER_PASSWORD_HASH` = `scrypt$<logN>$<r>$<p>$<salt b64url>$<hash b64url>`, produced from stdin by `mrouter hash-password` or the copy script's `scrypt-hash` transform. Accepted: `ROUTER_PASSWORD` (the password itself, ≥ 12 characters), compared as HMAC digests with `timingSafeEqual`. Both set → 503 `server_misconfigured`. |
 | `ROUTER_SECRET` | yes | ≥32 random bytes, base64/base64url. HKDF-SHA256 derives the key-encryption key (`info="provider-keys-v1"`) and the source-id HMAC key (`info="source-id-v1"`). Never rotated by tooling (rotation orphans stored keys). |
-| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in Redis overrides the env key. |
-| `KV_REST_API_URL`+`KV_REST_API_TOKEN` or `UPSTASH_REDIS_REST_URL`+`UPSTASH_REDIS_REST_TOKEN` | yes in production | Store. |
+| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
+| `DATABASE_URL_POOLED` (preferred) or `DATABASE_URL` | yes, unless `ROUTER_STORE=memory` | PostgreSQL URL of the store (Neon: the `-pooler` endpoint for `DATABASE_URL_POOLED`). In production `sslmode` must be `require`, `verify-ca` or `verify-full`; `channel_binding` may be `require`, `prefer` or `disable`; any other `ssl*` parameter or `uselibpqcompat` is refused (pg would let it override the TLS settings). A refused URL is reported as its variable's name; neither set → `DATABASE_URL_POOLED/DATABASE_URL`. Both values and the passwords in them are scrubbed from every output (§8). |
 | `ROUTER_STORE=memory` | dev/test only | Refused when `VERCEL` is set or `NODE_ENV=production`. |
 | `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` | no | Upstream origin overrides (tests/bench). |
 | `TRUST_PROXY_HEADERS` | no | Take the client IP from `x-vercel-forwarded-for`, then `x-real-ip` (Vercel overwrites both; client-supplied values are not forwarded). Implied true when `VERCEL=1`; tests set it to simulate many sources. Otherwise the socket address is used. |
@@ -142,33 +192,44 @@ Source id `S` = HMAC(source-key, normalized IP) truncated to 16 bytes hex. IPv4 
 address; IPv6 uses its /64 prefix. Unknown IP → the shared `unknown` bucket. The display form
 (IPv4 address or `prefix::/64`) is recorded only in auth events.
 
-Keys (`mr:v1:` prefix): `auth:block:S` (EX), `auth:wait:S` (PX), `auth:fail:S` (counter, EX
-window set NX), `auth:inflight:S` (counter, EX 60), `auth:strikes:S` (counter, EX 7 days).
+State: one `michael_router.auth_sources` row per source (§2) with the failure count and its
+window end, the wait end, the block end, the strike count and its end (7 days), and the inflight
+count and its end (60 s). End times come from the router's clock; a field counts only while its
+end time is later than now, so each one expires on its own. The policy below lives in
+`src/limiter.js`; the store implements each step as one atomic statement.
 
 Order on every protected request that presents a credential (no credential → 401
 `missing_credentials`, no store call, not counted):
 
-1. **Precheck** — one pipeline: `GET block`, `PTTL wait`, `GET fail`, `INCR inflight`,
-   `EXPIRE inflight 60`, plus `HGETALL mr:v1:keys` (provider key overrides; same round trip).
+1. **Precheck** (`authPrecheck`, one statement and round trip): take an inflight slot (the count
+   restarts at 1 when its end time has passed; the end becomes now + 60 s) and return the active
+   block end, wait end and failure count, the new inflight count, and every provider key record.
    - blocked → 429 `source_blocked`, `Retry-After` = remaining seconds.
-   - wait > 0 → 429 `auth_backoff`, `Retry-After` = ceil(wait).
-   - fail ≥ `AUTH_MAX_FAILURES` → 429 `source_blocked`.
+   - waiting → 429 `auth_backoff`, `Retry-After` = remaining seconds, rounded up.
+   - failures ≥ `AUTH_MAX_FAILURES` → 429 `source_blocked`, `Retry-After` = `AUTH_WINDOW_SECONDS`.
    - inflight > `AUTH_MAX_INFLIGHT` → 429 `auth_busy`, `Retry-After: 1`.
-   - Every rejection releases its inflight slot (`DECR`, via `waitUntil`) and evaluates no password.
+   - Every rejection releases its inflight slot (`authRelease`, via `waitUntil`) and evaluates no
+     password.
 2. **Verify** the password (§5.1).
-3. **Correct** → release inflight via `waitUntil`; continue to the route.
-4. **Wrong** → one `MULTI`: `SET fail 0 EX <window> NX`, `INCR fail`, `DECR inflight` (the first
-   failure starts a fixed window; no Redis 7 `EXPIRE … NX`). With `f` = new failure count: set
-   `auth:wait:S` to `min(base·2^(f-2), max)` ms when `f ≥ 2`; when `f = AUTH_MAX_FAILURES` (one
-   request per window), `INCR strikes` (EX 7d) and set `auth:block:S` for
-   `AUTH_BLOCK_SECONDS·2^(strikes-1)` capped at 86400 s. Record an `auth` event. Respond 401
-   `invalid_credentials` after sleeping `min(wait, 1000)` ms, with `Retry-After` when a wait is set.
-5. **Store unavailable** at any step (error or >1500 ms timeout) → 503 `store_unavailable`, fail
-   closed, no password evaluation.
+3. **Correct** → `authRelease` via `waitUntil` (inflight − 1, never below 0; the row is deleted
+   once nothing in it is active); continue to the route.
+4. **Wrong** → `authFailure`, one statement: `f` = (window active ? count : 0) + 1, the first
+   failure fixing the window end at now + `AUTH_WINDOW_SECONDS` (a fixed window); release the
+   inflight slot; when `f = AUTH_MAX_FAILURES` (exactly one request per window), strikes =
+   (active ? strikes : 0) + 1 with the end now + 7 days. Then `authPenalty` sets the wait to
+   `min(base·2^(f-2), max)` ms when `f ≥ 2` and, on a strike, the block to
+   `AUTH_BLOCK_SECONDS·2^(strikes-1)` capped at 86400 s, as end times that never shorten one
+   already set. Record an `auth` event. Respond 401 `invalid_credentials` after sleeping
+   `min(wait, 1000)` ms, with `Retry-After` when a wait is set.
+5. **Store unavailable** at any step (an error, a client not acquired within 5000 ms, or
+   statements slower than 1500 ms) → 503 `store_unavailable`, fail closed, no password
+   evaluation.
 
 Guarantee to test: across any number of instances and any concurrency, wrong-password
 evaluations per source per window ≤ `AUTH_MAX_FAILURES + AUTH_MAX_INFLIGHT`, after which the
-source is blocked even for the correct password until the block expires.
+source is blocked even for the correct password until the block expires. It holds because every
+precheck and failure of one source serializes on that source's row lock and acts on the latest
+committed row, so each request gets a distinct inflight and failure count.
 
 ### 5.3 Model routing (`src/routing.js`)
 
@@ -286,8 +347,10 @@ Every upstream or gateway error (except plain 401s, which are `auth` events) app
 
 ## 6. Provider keys (`src/keys.js`)
 
-Effective key per provider = Redis override (`mr:v1:keys` hash field = provider id, value JSON
-`{v:1, iv, ct, tag, updated_at}`, AES-256-GCM, AAD = provider id) else env var else none.
+Effective key per provider = stored override (`michael_router.provider_keys` row: `provider` =
+provider id, `record` = JSON `{v:1, iv, ct, tag, updated_at}`, AES-256-GCM, AAD = provider id;
+`updated_at` column for operators) else env var else none. Every precheck returns all records
+(§5.2), so resolving a key costs no extra round trip.
 Keys must be 8–512 printable non-space ASCII. Decrypted values may be cached in memory keyed by
 provider id + the whole stored record (so a changed or moved record is decrypted afresh). `PUT` never echoes the key; `verify:true` calls the provider's model-list endpoint
 before storing and stores only a key the provider accepted (reporting `verified: true` plus the
@@ -295,12 +358,15 @@ upstream status); a rejected or unverifiable key is refused and not stored.
 
 ## 7. Usage and cost (`src/usage.js`, `src/pricing.json`)
 
-Recorded after the response (non-streaming) or at stream end, via `waitUntil`, one pipeline:
-`HINCRBY mr:v1:usage:<YYYY-MM-DD> "<provider>\t<model>\t<metric>" n` for metrics `requests`,
+Recorded after the response (non-streaming) or at stream end, via `waitUntil`, as one
+`addUsage` statement adding `n` to the `usage_daily` row (UTC day, provider, model, metric) for
+metrics `requests`,
 `errors`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `cache_write_tokens`,
 `reasoning_tokens`, `cost_nusd` (integer nano-USD), `cost_exact` (provider-reported count),
 `cost_estimated`, `cost_unknown`, and `usage_missing` (a billable request that reported no
-usage); only non-zero metrics are written; `EXPIRE … 34560000` (400 d).
+usage); only non-zero metrics are written. The same statement deletes days older than 400 days
+(UTC). Concurrent writers never lose an update (`ON CONFLICT DO UPDATE SET value = value + n`)
+and never deadlock (§2); totals beyond 2^53 − 1 are skipped as malformed when read.
 
 Cost per request, in priority order:
 1. provider-reported (`usage.cost` from OpenRouter; OpenRouter credits are USD) → `exact`;
@@ -326,17 +392,20 @@ as zero.
 
 ## 8. Events, logging, redaction
 
-- `mr:v1:events` list, `LPUSH` + `LTRIM 0 199`. Event: `{ts, kind: auth|upstream|gateway, code,
+- `michael_router.events` rows; each append inserts, then deletes all but the newest 200 (ids
+  above the highest minus 200, skipping rows another trim holds), so concurrent appends leave at
+  most 200. Listed newest first. Event: `{ts, kind: auth|upstream|gateway, code,
   status, upstream_status?, provider?, model?, message, source? (auth only, display form),
   request_id}`. `message` is a fixed gateway sentence chosen by `code` (`EVENT_MESSAGES` in
   `src/events.js`; for a provider's own code, "The provider answered HTTP n." or, for an error
   inside a stream, "The provider reported an error inside the stream."). It interpolates only
   numbers (a block duration, an HTTP status).
 - Never stored or logged anywhere: request bodies, prompts, completions, headers, the password,
-  the password hash, provider keys, `ROUTER_SECRET`, store token, and no provider, client or
+  the password hash, provider keys, `ROUTER_SECRET`, the database URLs and passwords, and no provider, client or
   exception text at all: provider error messages can quote the prompt, so only the client that
   sent the request receives them (scrubbed).
-- `src/redact.js` replaces configured provider keys, the presented bearer value and patterns
+- `src/redact.js` replaces configured provider keys, the database URLs and the passwords in them
+  (as written and percent-decoded), the presented bearer value and patterns
   (`sk-ant-…`, `sk-or-…`, `AIza…`, `Bearer …`, long base64/hex tokens) with `[redacted]`.
 - `src/log.js` emits one JSON line per request with allowlisted fields only:
   `request_id, route, method, status, provider, model, duration_ms, upstream_ms, store_ms,

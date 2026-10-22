@@ -1,269 +1,196 @@
-// In-process store with the same raw-command interface as the Upstash client, implementing
-// exactly the Redis commands (and options) the router uses, with Redis semantics (TTLs, NX, types).
-// dev/fake-upstash.js serves this engine over the Upstash REST protocol.
+// In-process store with the domain interface and the semantics of src/store/postgres.js: the same
+// rows, end times from the caller's clock (a field is active while its end time is later than
+// now), the same sweep. Each method runs synchronously, so each is atomic. For ROUTER_STORE=memory
+// (development and tests; refused in production) and the in-process test harness.
+import { INFLIGHT_TTL_MS, STRIKES_TTL_MS, SWEEP_LIMIT, checkDay, checkMs, checkUsageEntries } from './contract.js';
+import { LATEST_SCHEMA_VERSION } from './migrations.js';
 
-export class RedisError extends Error {
-  /** @param {string} message */
-  constructor(message) {
-    super(message);
-    this.name = 'RedisError';
-  }
+/**
+ * @typedef {{source: string, failures: number, failures_until_ms: number, wait_until_ms: number,
+ *   block_until_ms: number, strikes: number, strikes_until_ms: number, inflight: number,
+ *   inflight_until_ms: number, expires_ms: number}} AuthRow
+ */
+
+/** @param {string} source @returns {AuthRow} */
+const newAuthRow = (source) => ({
+  source,
+  failures: 0,
+  failures_until_ms: 0,
+  wait_until_ms: 0,
+  block_until_ms: 0,
+  strikes: 0,
+  strikes_until_ms: 0,
+  inflight: 0,
+  inflight_until_ms: 0,
+  expires_ms: 0,
+});
+
+/** @param {unknown} s */
+function checkText(s) {
+  if (typeof s !== 'string') throw new TypeError('expected a string');
+  return s;
 }
 
-const WRONGTYPE = 'WRONGTYPE Operation against a key holding the wrong kind of value';
-const NOT_INT = 'ERR value is not an integer or out of range';
-const SYNTAX = 'ERR syntax error';
+export function createMemoryStore() {
+  /** @type {Map<string, AuthRow>} */
+  const auth = new Map();
+  /** @type {Map<string, {provider: string, record: string, updated_at: string}>} */
+  const keys = new Map();
+  /** @type {Map<string, {day: string, provider: string, model: string, metric: string, value: number}>} */
+  const usage = new Map();
+  /** @type {{id: number, event: string}[]} oldest first */
+  let events = [];
+  let nextEventId = 1;
 
-/**
- * @typedef {{type: 'string', value: string, expiresAt: number | null}
- *   | {type: 'hash', value: Map<string, string>, expiresAt: number | null}
- *   | {type: 'list', value: string[], expiresAt: number | null}} Entry
- */
-
-/**
- * @param {{now?: () => number}} [options]
- */
-export function createMemoryStore({ now = Date.now } = {}) {
-  /** @type {Map<string, Entry>} */
-  const data = new Map();
-  let ops = 0;
-
-  /** @param {string} key @returns {Entry | undefined} */
-  function entry(key) {
-    const e = data.get(key);
-    if (e && e.expiresAt !== null && e.expiresAt <= now()) {
-      data.delete(key);
-      return undefined;
-    }
-    return e;
-  }
-  /** @param {string} key @param {Entry['type']} type @returns {any} */
-  function typed(key, type) {
-    const e = entry(key);
-    if (e && e.type !== type) throw new RedisError(WRONGTYPE);
-    return e;
-  }
-  /** @param {string} s */
-  function toInt(s, message = NOT_INT) {
-    if (!/^-?\d{1,16}$/.test(s) || !Number.isSafeInteger(Number(s))) throw new RedisError(message);
-    return Number(s);
-  }
-  /** @param {number} n */
-  function checked(n) {
-    if (!Number.isSafeInteger(n)) throw new RedisError('ERR increment or decrement would overflow');
-    return n;
-  }
-  /** @param {string} key @param {number} by */
-  function incrBy(key, by) {
-    const e = typed(key, 'string');
-    const next = checked((e ? toInt(e.value) : 0) + by);
-    if (e) e.value = String(next);
-    else data.set(key, { type: 'string', value: String(next), expiresAt: null });
-    return next;
-  }
-  /** @param {number} len @param {string} a @param {string} b @returns {[number, number]} */
-  function range(len, a, b) {
-    let start = toInt(a);
-    let stop = toInt(b);
-    if (start < 0) start = Math.max(len + start, 0);
-    if (stop < 0) stop = len + stop;
-    if (stop >= len) stop = len - 1;
-    return [start, stop];
-  }
-
-  /** @type {Record<string, [number, number, (args: string[]) => unknown]>} name -> [min args, max args, fn] */
-  const COMMANDS = {
-    PING: [0, 1, (a) => (a.length ? a[0] : 'PONG')],
-    GET: [1, 1, ([k]) => typed(k, 'string')?.value ?? null],
-    SET: [
-      2,
-      Infinity,
-      ([k, v, ...opts]) => {
-        /** @type {number | null} */
-        let expiresAt = null;
-        let nx = false;
-        for (let i = 0; i < opts.length; i++) {
-          const o = opts[i].toUpperCase();
-          if (o === 'NX') nx = true;
-          else if ((o === 'EX' || o === 'PX') && expiresAt === null && i + 1 < opts.length) {
-            const n = toInt(opts[++i]);
-            if (n <= 0) throw new RedisError("ERR invalid expire time in 'set' command");
-            expiresAt = now() + (o === 'EX' ? n * 1000 : n);
-          } else throw new RedisError(SYNTAX);
-        }
-        if (nx && entry(k) !== undefined) return null;
-        data.set(k, { type: 'string', value: v, expiresAt });
-        return 'OK';
-      },
-    ],
-    DEL: [1, Infinity, (keys) => keys.filter((k) => entry(k) !== undefined && data.delete(k)).length],
-    INCR: [1, 1, ([k]) => incrBy(k, 1)],
-    DECR: [1, 1, ([k]) => incrBy(k, -1)],
-    EXPIRE: [
-      2,
-      2,
-      ([k, secs]) => {
-        const n = toInt(secs);
-        const e = entry(k);
-        if (!e) return 0;
-        if (n <= 0) data.delete(k);
-        else e.expiresAt = now() + n * 1000;
-        return 1;
-      },
-    ],
-    TTL: [1, 1, ([k]) => ttl(k, 1000)],
-    PTTL: [1, 1, ([k]) => ttl(k, 1)],
-    HSET: [
-      3,
-      Infinity,
-      ([k, ...fv]) => {
-        if (fv.length % 2) throw new RedisError("ERR wrong number of arguments for 'hset' command");
-        let e = typed(k, 'hash');
-        if (!e) data.set(k, (e = { type: 'hash', value: new Map(), expiresAt: null }));
-        let added = 0;
-        for (let i = 0; i < fv.length; i += 2) {
-          if (!e.value.has(fv[i])) added++;
-          e.value.set(fv[i], fv[i + 1]);
-        }
-        return added;
-      },
-    ],
-    HDEL: [
-      2,
-      Infinity,
-      ([k, ...fields]) => {
-        const e = typed(k, 'hash');
-        if (!e) return 0;
-        const removed = fields.filter((f) => e.value.delete(f)).length;
-        if (e.value.size === 0) data.delete(k);
-        return removed;
-      },
-    ],
-    HGETALL: [1, 1, ([k]) => [...(typed(k, 'hash')?.value ?? new Map())].flat()],
-    HINCRBY: [
-      3,
-      3,
-      ([k, field, by]) => {
-        const n = toInt(by);
-        let e = typed(k, 'hash');
-        if (!e) data.set(k, (e = { type: 'hash', value: new Map(), expiresAt: null }));
-        const cur = e.value.has(field) ? toInt(e.value.get(field), 'ERR hash value is not an integer') : 0;
-        const next = checked(cur + n);
-        e.value.set(field, String(next));
-        return next;
-      },
-    ],
-    LPUSH: [
-      2,
-      Infinity,
-      ([k, ...values]) => {
-        let e = typed(k, 'list');
-        if (!e) data.set(k, (e = { type: 'list', value: [], expiresAt: null }));
-        for (const v of values) e.value.unshift(v);
-        return e.value.length;
-      },
-    ],
-    LTRIM: [
-      3,
-      3,
-      ([k, a, b]) => {
-        const e = typed(k, 'list');
-        const [start, stop] = range(e ? e.value.length : 0, a, b);
-        if (!e) return 'OK';
-        e.value = start > stop ? [] : e.value.slice(start, stop + 1);
-        if (e.value.length === 0) data.delete(k);
-        return 'OK';
-      },
-    ],
-    LRANGE: [
-      3,
-      3,
-      ([k, a, b]) => {
-        const e = typed(k, 'list');
-        const [start, stop] = range(e ? e.value.length : 0, a, b);
-        return !e || start > stop ? [] : e.value.slice(start, stop + 1);
-      },
-    ],
-  };
-
-  /** @param {string} k @param {number} unit */
-  function ttl(k, unit) {
-    const e = entry(k);
-    if (!e) return -2;
-    if (e.expiresAt === null) return -1;
-    return Math.round((e.expiresAt - now()) / unit);
-  }
-
-  /**
-   * Throws RedisError for malformed, unknown or wrong-arity commands (what MULTI rejects at queue time).
-   * @param {unknown} cmd
-   * @returns {[string, string[]]}
-   */
-  function validate(cmd) {
-    if (!Array.isArray(cmd) || cmd.length === 0 || !cmd.every((a) => typeof a === 'string' || typeof a === 'number')) {
-      throw new RedisError('ERR invalid command format');
-    }
-    const name = String(cmd[0]).toUpperCase();
-    const spec = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
-    if (!spec) throw new RedisError(`ERR unknown command '${String(cmd[0]).slice(0, 64)}'`);
-    const args = cmd.slice(1).map(String);
-    if (args.length < spec[0] || args.length > spec[1]) {
-      throw new RedisError(`ERR wrong number of arguments for '${name.toLowerCase()}' command`);
-    }
-    return [name, args];
-  }
-
-  /** @param {unknown} cmd */
-  function exec(cmd) {
-    const [name, args] = validate(cmd);
-    if (++ops % 1000 === 0) for (const k of [...data.keys()]) entry(k); // sweep expired keys
-    return COMMANDS[name][2](args);
-  }
-
-  /** @param {unknown[]} cmds @returns {({result: unknown} | {error: string})[]} */
-  function execEach(cmds) {
-    return cmds.map((c) => {
-      try {
-        return { result: exec(c) };
-      } catch (err) {
-        if (err instanceof RedisError) return { error: err.message };
-        throw err;
-      }
-    });
-  }
-
-  /** @param {({result: unknown} | {error: string})[]} entries */
-  function unwrap(entries) {
-    const bad = entries.find((e) => 'error' in e);
-    if (bad && 'error' in bad) throw new RedisError(bad.error);
-    return entries.map((e) => ('result' in e ? e.result : null));
-  }
+  /** @param {AuthRow} r @param {number} now */
+  const activeInflight = (r, now) => (r.inflight_until_ms > now ? r.inflight : 0);
+  /** @param {AuthRow} r @param {number} now */
+  const penalized = (r, now) => Math.max(r.failures_until_ms, r.wait_until_ms, r.block_until_ms, r.strikes_until_ms) > now;
 
   return {
-    kind: /** @type {const} */ ('memory'),
-    exec,
-    validate,
-    execEach,
-    /** @param {unknown[]} cmd */
-    command: async (cmd) => exec(cmd),
-    /** @param {unknown[][]} cmds */
-    pipeline: async (cmds) => unwrap(execEach(cmds)),
-    /** @param {unknown[][]} cmds */
-    multi: async (cmds) => {
-      cmds.forEach(validate);
-      return unwrap(execEach(cmds));
+    kind: 'memory',
+
+    async ping() {
+      return { schemaVersion: LATEST_SCHEMA_VERSION };
     },
-    /** Snapshot for tests (fake-upstash `/__dump`). */
-    dump() {
-      /** @type {Record<string, unknown>} */
-      const out = {};
-      for (const k of [...data.keys()].sort()) {
-        const e = entry(k);
-        if (!e) continue;
-        const value = e.type === 'hash' ? Object.fromEntries(e.value) : e.type === 'list' ? [...e.value] : e.value;
-        out[k] = { type: e.type, value, ttl_ms: e.expiresAt === null ? -1 : e.expiresAt - now() };
+
+    /** @param {string} source @param {number} nowMs */
+    async authPrecheck(source, nowMs) {
+      checkText(source);
+      const now = checkMs(nowMs);
+      const r = auth.get(source) ?? newAuthRow(source);
+      r.inflight = activeInflight(r, now) + 1;
+      r.inflight_until_ms = now + INFLIGHT_TTL_MS;
+      r.expires_ms = Math.max(r.expires_ms, r.inflight_until_ms);
+      auth.set(source, r);
+      return {
+        blockUntilMs: r.block_until_ms > now ? r.block_until_ms : null,
+        waitUntilMs: r.wait_until_ms > now ? r.wait_until_ms : null,
+        failures: r.failures_until_ms > now ? r.failures : 0,
+        inflight: r.inflight,
+        keys: Object.fromEntries([...keys.values()].map((k) => [k.provider, k.record])),
+      };
+    },
+
+    /** @param {string} source @param {number} nowMs */
+    async authRelease(source, nowMs) {
+      checkText(source);
+      const now = checkMs(nowMs);
+      const r = auth.get(source);
+      if (!r) return;
+      const inflight = Math.max(activeInflight(r, now) - 1, 0);
+      if (inflight === 0 && !penalized(r, now)) auth.delete(source);
+      else r.inflight = inflight;
+    },
+
+    /**
+     * @param {string} source @param {number} nowMs
+     * @param {{windowMs: number, maxFailures: number}} limits
+     */
+    async authFailure(source, nowMs, { windowMs, maxFailures }) {
+      checkText(source);
+      const now = checkMs(nowMs);
+      checkMs(windowMs);
+      checkMs(maxFailures);
+      const r = auth.get(source) ?? newAuthRow(source);
+      const windowActive = r.failures_until_ms > now;
+      r.failures = windowActive ? r.failures + 1 : 1;
+      if (!windowActive) r.failures_until_ms = now + windowMs;
+      r.inflight = Math.max(activeInflight(r, now) - 1, 0);
+      const strike = r.failures === maxFailures;
+      if (strike) {
+        r.strikes = (r.strikes_until_ms > now ? r.strikes : 0) + 1;
+        r.strikes_until_ms = now + STRIKES_TTL_MS;
       }
-      return out;
+      r.expires_ms = Math.max(r.expires_ms, r.failures_until_ms, r.strikes_until_ms);
+      auth.set(source, r);
+      // The same opportunistic sweep as Postgres: dead rows of other sources, oldest first.
+      const dead = [...auth.values()].filter((d) => d.expires_ms < now && d.source !== source);
+      for (const d of dead.sort((a, b) => a.expires_ms - b.expires_ms).slice(0, SWEEP_LIMIT)) auth.delete(d.source);
+      return { failures: r.failures, strikes: strike ? r.strikes : null };
+    },
+
+    /**
+     * @param {string} source @param {number} nowMs
+     * @param {{waitUntilMs: number | null, blockUntilMs: number | null}} until
+     */
+    async authPenalty(source, nowMs, { waitUntilMs, blockUntilMs }) {
+      checkText(source);
+      checkMs(nowMs);
+      if (waitUntilMs !== null) checkMs(waitUntilMs);
+      if (blockUntilMs !== null) checkMs(blockUntilMs);
+      if (waitUntilMs === null && blockUntilMs === null) return;
+      const r = auth.get(source) ?? newAuthRow(source);
+      r.wait_until_ms = Math.max(r.wait_until_ms, waitUntilMs ?? 0);
+      r.block_until_ms = Math.max(r.block_until_ms, blockUntilMs ?? 0);
+      r.expires_ms = Math.max(r.expires_ms, r.wait_until_ms, r.block_until_ms);
+      auth.set(source, r);
+    },
+
+    /** @param {string} provider @param {string} record @param {string} updatedAtIso */
+    async setProviderKey(provider, record, updatedAtIso) {
+      checkText(provider);
+      checkText(record);
+      if (!Number.isFinite(Date.parse(checkText(updatedAtIso)))) throw new TypeError('updated_at must be a timestamp');
+      keys.set(provider, { provider, record, updated_at: updatedAtIso });
+    },
+
+    /** @param {string} provider */
+    async deleteProviderKey(provider) {
+      return keys.delete(checkText(provider));
+    },
+
+    /**
+     * @param {string} day
+     * @param {{provider: string, model: string, metric: string, value: number}[]} entries
+     * @param {{retainFromDay: string}} options
+     */
+    async addUsage(day, entries, { retainFromDay }) {
+      checkDay(day);
+      checkDay(retainFromDay);
+      checkUsageEntries(entries);
+      if (entries.length === 0) return;
+      for (const [id, row] of usage) if (row.day < retainFromDay) usage.delete(id);
+      for (const { provider, model, metric, value } of entries) {
+        const id = JSON.stringify([day, provider, model, metric]);
+        const row = usage.get(id);
+        if (row) row.value += value;
+        else usage.set(id, { day, provider, model, metric, value });
+      }
+    },
+
+    /** @param {string} fromDay @param {string} toDay */
+    async readUsage(fromDay, toDay) {
+      checkDay(fromDay);
+      checkDay(toDay);
+      return [...usage.values()].filter((r) => r.day >= fromDay && r.day <= toDay).map((r) => ({ ...r }));
+    },
+
+    /** @param {string} json @param {number} max */
+    async appendEvent(json, max) {
+      JSON.parse(checkText(json)); // Postgres stores it as json, which must parse
+      checkMs(max);
+      events.push({ id: nextEventId++, event: json });
+      if (events.length > max) events = events.slice(events.length - max);
+    },
+
+    /** @param {number} max */
+    async listEvents(max) {
+      checkMs(max);
+      return events
+        .slice(-max)
+        .reverse()
+        .map((e) => e.event);
+    },
+
+    /** Every row, table by table, in the Postgres column names (tests only). */
+    dump() {
+      return {
+        auth_sources: [...auth.values()].map((r) => ({ ...r })),
+        provider_keys: [...keys.values()].map((k) => ({ ...k })),
+        usage_daily: [...usage.values()].map((r) => ({ ...r })),
+        events: events.map((e) => ({ ...e })),
+      };
     },
   };
 }

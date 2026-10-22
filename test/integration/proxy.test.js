@@ -3,7 +3,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import { FAKE_TEXT, startFakeProviders } from '../../dev/fake-providers.js';
-import { KEYS_HASH } from '../../src/keys.js';
 import { createSSEParser } from '../../src/sse.js';
 import { ENV_KEYS, PASSWORD, bearer, fakeClock } from '../helpers/fixtures.js';
 import { makeHarness } from '../helpers/harness.js';
@@ -510,7 +509,7 @@ test('PUT /control/keys/:p verify:true verifies before storing: a rejected or un
   const h = await makeHarness({ env: fake.env });
   const put = (/** @type {string} */ provider, /** @type {string} */ key, verify = true) =>
     h.call(`/control/keys/${provider}`, { method: 'PUT', headers: bearer(), body: JSON.stringify({ key, verify }) });
-  const stored = () => Object.fromEntries(/** @type {string[]} */ (h.store.exec(['HGETALL', KEYS_HASH])).flatMap((v, i, a) => (i % 2 ? [] : [[v, a[i + 1]]])));
+  const stored = () => Object.fromEntries(h.store.dump().provider_keys.map((/** @type {any} */ k) => [k.provider, k.record]));
   const ok = await put('claude', 'sk-ant-fake-SENTINEL-verify-ok');
   assert.equal(ok.status, 200);
   assert.deepEqual(ok.json, { provider: 'claude', configured: true, source: 'store', updated_at: ok.json.updated_at, verified: true, upstream_status: 200 });

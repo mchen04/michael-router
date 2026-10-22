@@ -1,12 +1,11 @@
-// Usage recording and aggregation (DESIGN §7). The hash format is the contract:
-//   HINCRBY mr:v1:usage:<YYYY-MM-DD> "<provider>\t<model>\t<metric>" n   (EXPIRE 34560000)
+// Usage recording and aggregation (DESIGN §7). The row format is the contract: one counter per
+//   (UTC day, provider, model, metric) in usage_daily, added to atomically, kept 400 days.
 // Besides BASE_METRICS, recording writes `cache_write_tokens` and `usage_missing`; aggregation
 // sums any well-formed metric, so both appear in /control/usage rows when non-zero.
 import { GatewayError } from './http.js';
 import { costOf } from './pricing.js';
 
-export const USAGE_KEY_PREFIX = 'mr:v1:usage:';
-export const USAGE_TTL_SECONDS = 34560000; // 400 days
+/** Days kept, today included: exactly the days /control/usage can ask for. */
 export const MAX_USAGE_DAYS = 400;
 export const DEFAULT_USAGE_DAYS = 30;
 /** Metrics every aggregate row reports (0 when absent). Other well-formed metrics are summed too. */
@@ -28,8 +27,8 @@ const DAY_MS = 86400000;
 
 /** @param {number} ms @returns {string} UTC YYYY-MM-DD */
 export const utcDay = (ms) => new Date(ms).toISOString().slice(0, 10);
-/** @param {string} day */
-export const usageKey = (day) => `${USAGE_KEY_PREFIX}${day}`;
+/** The oldest UTC day kept when recording at `nowMs`. @param {number} nowMs */
+export const retainFromDay = (nowMs) => utcDay(nowMs - (MAX_USAGE_DAYS - 1) * DAY_MS);
 
 /**
  * Resolve `?days=N` (1..400, default 30) or `?since=YYYY-MM-DD` (inclusive, at most 400 days) to UTC days.
@@ -93,24 +92,21 @@ function finish(row) {
 }
 
 /**
- * @param {unknown[]} dayHashes raw HGETALL results, one per day
+ * @param {readonly {provider: unknown, model: unknown, metric: unknown, value: unknown}[]} counters
+ *   store rows (any days); malformed ones are skipped
  */
-export function aggregateUsage(dayHashes) {
+export function aggregateUsage(counters) {
   /** @type {Map<string, Record<string, any>>} */
   const rows = new Map();
-  for (const flat of dayHashes) {
-    if (!Array.isArray(flat)) continue;
-    for (let i = 0; i + 1 < flat.length; i += 2) {
-      const parts = String(flat[i]).split('\t');
-      const n = Number(flat[i + 1]);
-      if (parts.length !== 3 || !Number.isSafeInteger(n)) continue;
-      const [provider, model, metric] = parts;
-      if (!METRIC_NAME.test(metric) || RESERVED.has(metric)) continue;
-      const id = `${provider}\t${model}`;
-      let row = rows.get(id);
-      if (!row) rows.set(id, (row = newRow({ provider, model })));
-      row[metric] = (row[metric] ?? 0) + n;
-    }
+  for (const c of counters) {
+    if (!c || typeof c !== 'object') continue;
+    const { provider, model, metric, value } = c;
+    if (typeof provider !== 'string' || typeof model !== 'string' || typeof metric !== 'string') continue;
+    if (!Number.isSafeInteger(value) || !METRIC_NAME.test(metric) || RESERVED.has(metric)) continue;
+    const id = JSON.stringify([provider, model]);
+    let row = rows.get(id);
+    if (!row) rows.set(id, (row = newRow({ provider, model })));
+    row[metric] = (row[metric] ?? 0) + /** @type {number} */ (value);
   }
   const sorted = [...rows.values()].sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model));
   /** @type {Map<string, Record<string, any>>} */
@@ -149,7 +145,7 @@ export function normalizeUsage(u) {
 }
 
 /**
- * The HINCRBY pipeline for one forwarded request (non-zero metrics only, then EXPIRE).
+ * The usage counters of one forwarded request (non-zero metrics only).
  *   usage known and final -> tokens + cost (exact | estimated | unknown);
  *   usage partial (stream cut short) -> tokens, cost unknown;
  *   no usage but the provider may have billed (success, timeout, abort, broken stream)
@@ -157,9 +153,9 @@ export function normalizeUsage(u) {
  *   no usage and nothing billable (upstream HTTP error, unreachable) -> requests/errors only.
  * @param {{provider: string, model: string, nowMs: number, error: boolean, billable: boolean,
  *   usage: import('./pricing.js').Usage | null, usageFinal: boolean}} r
- * @returns {unknown[][]}
+ * @returns {{provider: string, model: string, metric: string, value: number}[]}
  */
-export function usageCommands({ provider, model, nowMs, error, billable, usage, usageFinal }) {
+export function usageEntries({ provider, model, nowMs, error, billable, usage, usageFinal }) {
   /** @type {Record<string, number>} */
   const m = { requests: 1, errors: error ? 1 : 0 };
   if (usage) {
@@ -175,21 +171,19 @@ export function usageCommands({ provider, model, nowMs, error, billable, usage, 
     m.usage_missing = 1;
     m.cost_unknown = 1;
   }
-  const key = usageKey(utcDay(nowMs));
-  /** @type {unknown[][]} */
-  const cmds = Object.entries(m)
+  return Object.entries(m)
     .filter(([, n]) => n > 0)
-    .map(([metric, n]) => ['HINCRBY', key, `${provider}\t${model}\t${metric}`, n]);
-  cmds.push(['EXPIRE', key, USAGE_TTL_SECONDS]);
-  return cmds;
+    .map(([metric, value]) => ({ provider, model, metric, value }));
 }
 
 /**
- * Record in the background (one pipeline via waitUntil); never fails the request.
+ * Record in the background (one store statement via waitUntil, which also purges days older
+ * than 400); never fails the request.
  * @param {any} ctx
- * @param {Omit<Parameters<typeof usageCommands>[0], 'nowMs'>} r
+ * @param {Omit<Parameters<typeof usageEntries>[0], 'nowMs'>} r
  */
 export function recordUsage(ctx, r) {
   if (!ctx.store) return;
-  ctx.waitUntil(ctx.store.pipeline(usageCommands({ ...r, nowMs: ctx.now() })));
+  const nowMs = ctx.now();
+  ctx.waitUntil(ctx.store.addUsage(utcDay(nowMs), usageEntries({ ...r, nowMs }), { retainFromDay: retainFromDay(nowMs) }));
 }

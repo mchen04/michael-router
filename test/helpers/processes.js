@@ -1,4 +1,4 @@
-// Spawn dev/server.js and dev/fake-upstash.js as real processes on port 0.
+// Spawn dev/server.js as a real process on port 0.
 // Children get an explicit, minimal environment (nothing is inherited from the test runner);
 // provider base URLs default to a closed port unless the test points them at a fake.
 import { spawn } from 'node:child_process';
@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { OFFLINE_BASE_URLS } from './fixtures.js';
 
 export const DEV_SERVER = fileURLToPath(new URL('../../dev/server.js', import.meta.url));
-export const FAKE_UPSTASH = fileURLToPath(new URL('../../dev/fake-upstash.js', import.meta.url));
 
 /**
  * @param {string} script
@@ -52,12 +51,3 @@ export async function startProcess(script, args = [], env = {}) {
 
 /** @param {Record<string, string>} env @param {string[]} [flags] */
 export const startDevServer = (env, flags = []) => startProcess(DEV_SERVER, ['--port', '0', ...flags], { ...OFFLINE_BASE_URLS, ...env });
-
-/** @param {string} token @param {string[]} [flags] */
-export const startFakeUpstash = (token, flags = []) => startProcess(FAKE_UPSTASH, ['--port', '0', '--token', token, ...flags]);
-
-/** Send one raw command to a fake Upstash. @param {string} url @param {string} token @param {unknown[]} cmd */
-export async function upstash(url, token, cmd) {
-  const res = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(cmd) });
-  return res.json();
-}
