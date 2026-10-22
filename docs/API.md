@@ -24,7 +24,7 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 | `PUT /control/keys/:provider` | `{"key": "...", "verify": true}`: store an encrypted key override (with `verify`, only after the provider accepted it; see below) |
 | `DELETE /control/keys/:provider` | Remove the override (falls back to the environment key) |
 | `GET /control/usage?days=N` or `?since=YYYY-MM-DD` | Usage and cost per provider and model (UTC days, at most 400) |
-| `GET /control/errors?limit=N&kind=auth\|upstream\|gateway` | Recent events, newest first (at most 200 kept) |
+| `GET /control/errors?limit=N&kind=auth\|upstream\|gateway` | Recent events, newest first (the newest 200 are kept) |
 
 Unknown paths under `/v1/` and `/control/` answer 404 and wrong methods 405, but only after
 authentication, so the route table cannot be probed without the password.

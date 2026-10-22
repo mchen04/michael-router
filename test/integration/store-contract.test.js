@@ -22,7 +22,9 @@ after(async () => {
 
 /**
  * @typedef {{store: any, authRow: (source: string) => Promise<Record<string, any> | undefined>,
- *   sources: () => Promise<string[]>, close: () => Promise<void>}} Backend
+ *   sources: () => Promise<string[]>, eventIdGap: (n: number) => Promise<void>, close: () => Promise<void>}} Backend
+ *   eventIdGap: skip event ids the way Postgres does (an insert that rolled back, sequence values
+ *   lost in a crash); the memory store has no ids to skip
  */
 
 /** @type {Record<string, (name: string) => Promise<Backend>>} */
@@ -34,6 +36,7 @@ const BACKENDS = {
       store,
       authRow: async (source) => rows().find((r) => r.source === source),
       sources: async () => rows().map((r) => r.source).sort(),
+      eventIdGap: async () => {},
       close: async () => {},
     };
   },
@@ -49,6 +52,13 @@ const BACKENDS = {
       store,
       authRow: async (source) => (await rows()).find((r) => r.source === source),
       sources: async () => (await rows()).map((r) => r.source).sort(),
+      eventIdGap: (n) =>
+        withClient(url, async (c) => {
+          await c.query('BEGIN');
+          await c.query("INSERT INTO michael_router.events (event) SELECT '{}' FROM generate_series(1, $1::integer)", [n]);
+          await c.query('ROLLBACK');
+          await c.query("SELECT setval(pg_get_serial_sequence('michael_router.events', 'id'), nextval(pg_get_serial_sequence('michael_router.events', 'id')) + $1::bigint)", [n]);
+        }),
       close: () => store.close(),
     };
   },
@@ -207,6 +217,23 @@ const CASES = [
       assert.deepEqual(await store.listEvents(2), texts.slice(-2).reverse());
       await assert.rejects(store.appendEvent('{"truncated', 5));
       assert.deepEqual(await store.listEvents(200), texts.slice(-5).reverse());
+    },
+  ],
+  [
+    'events: exactly the newest max are kept, also across gaps in the ids',
+    async ({ store, eventIdGap }) => {
+      const event = (/** @type {number} */ i) => JSON.stringify({ kind: 'auth', i });
+      const newest = (/** @type {number} */ last, /** @type {number} */ n) => Array.from({ length: n }, (_, k) => event(last - k));
+      for (const i of [1, 2, 3]) await store.appendEvent(event(i), 5);
+      await eventIdGap(50);
+      await store.appendEvent(event(4), 5);
+      assert.deepEqual(await store.listEvents(200), newest(4, 4), 'fewer than max: nothing is trimmed');
+      for (const i of [5, 6]) await store.appendEvent(event(i), 5);
+      await eventIdGap(50);
+      await store.appendEvent(event(7), 5);
+      assert.deepEqual(await store.listEvents(200), newest(7, 5));
+      for (const bad of [0, -1, 1.5]) await assert.rejects(store.appendEvent(event(8), bad), TypeError, String(bad));
+      assert.deepEqual(await store.listEvents(200), newest(7, 5), 'a count below 1 is refused before anything is written');
     },
   ],
   [

@@ -46,16 +46,20 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
   `michael_router`; nothing outside it is read for router state or changed.
   - Pool: `max` 5, idle clients closed after 10 s, `connectionTimeoutMillis` 5000 (covers a cold
     compute wake and waiting for a pool client), `application_name=michael-router`. On Vercel the
-    pool is handed to `attachDatabasePool`, which closes idle clients before the instance suspends.
+    pool is handed to `attachDatabasePool`: after each client release it keeps the instance alive
+    for the pool's idle timeout plus about 100 ms (never past the function's deadline), so pg-pool
+    closes the idle clients itself before the instance suspends.
   - Statements: parameterized, every table written `michael_router.<table>` (no dependence on
     `search_path`), one autocommitted statement per method (events: insert, then trim). No `SET`,
     interactive transactions or session advisory locks, so they work through PgBouncer in
     transaction mode; no `statement_timeout` or `options` startup parameters.
   - Atomicity: an `auth_sources` statement locks only the source's row (`INSERT … ON CONFLICT DO
     UPDATE`, or `SELECT … FOR UPDATE` in a release), so concurrent requests on one source
-    serialize on that row and every count is exact across instances. Usage upserts lock their
-    rows in one byte order (`ORDER BY … COLLATE "C"`), and the sweeps and trims take their locks
-    with `SKIP LOCKED`: no statement waits on more than one lock, so none can deadlock.
+    serialize on that row and every count is exact across instances. A usage upsert locks one row
+    per counter it adds to and may wait on each, but every writer locks its rows in the same byte
+    order (`ORDER BY … COLLATE "C"`), so no two writers can wait on each other in a cycle. The
+    sweeps and trims take their locks with `SKIP LOCKED` and never wait. So no statement can
+    deadlock.
   - Sweep: each wrong-password statement also deletes up to 100 dead `auth_sources` rows of other
     sources (every end time passed), oldest first, skipping locked rows; a release deletes its own
     row once nothing in it is active. The table stays bounded by the sources seen recently.
@@ -66,12 +70,16 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
   - TLS: `sslmode` `require`, `verify-ca` or `verify-full` connects with
     `ssl: {rejectUnauthorized: true}` (verify-full semantics with the system CAs; the URL's
     `sslmode` and `channel_binding` are removed before pg sees it, so pg's sslmode handling and
-    its warning never apply). `channel_binding=require` or `prefer` enables pg's
-    `enableChannelBinding` (SCRAM-SHA-256-PLUS with tls-server-end-point when the server offers
-    it); pg 8.23 does not refuse a server that offers no binding, so certificate and host
-    verification is what binds the connection to the server. Production refuses a URL whose
-    `sslmode` is missing, `disable`, `allow` or `prefer`. Outside production, TLS may be off only
-    for a loopback host or a unix-socket `host=` directory (tests).
+    its warning never apply). pg's `enableChannelBinding` is on whenever TLS is, unless the URL
+    sets `channel_binding=disable`: with `require`, with `prefer` and with no `channel_binding` at
+    all (SCRAM-SHA-256-PLUS with tls-server-end-point when the server offers it). pg 8.23 does not
+    refuse a server that offers no binding, so certificate and host verification is what binds the
+    connection to the server. `channel_binding=require` without TLS is refused. Production refuses
+    a URL whose `sslmode` is missing, `disable`, `allow` or `prefer`, and a URL that leaves out the
+    host (its host name or a `host=` parameter), the user or the password: pg would fill each in
+    from `PGHOST`, `PGUSER` or `PGPASSWORD` (or a password file). Outside production, TLS may be
+    off only for a loopback host or a unix-socket `host=` directory (tests), and the user and
+    password may be left out.
   - Errors: every pg failure becomes a generic `StoreError` (never the URL, host, user, password,
     SQL or parameters), keeping only a 5-character SQLSTATE as a property. `bigint` values arrive
     as text and are converted with `Number`; an unsafe integer is a malformed row.
@@ -160,7 +168,7 @@ gitignored `evidence/` directory or outside the repository; only summaries are c
 | `ROUTER_PASSWORD_HASH` or `ROUTER_PASSWORD` | exactly one | The access password exists only as a Vercel sensitive environment variable — never in repository files, history, logs or command arguments. Preferred: `ROUTER_PASSWORD_HASH` = `scrypt$<logN>$<r>$<p>$<salt b64url>$<hash b64url>`, produced from stdin by `mrouter hash-password` or the copy script's `scrypt-hash` transform. Accepted: `ROUTER_PASSWORD` (the password itself, ≥ 12 characters), compared as HMAC digests with `timingSafeEqual`. Both set → 503 `server_misconfigured`. |
 | `ROUTER_SECRET` | yes | ≥32 random bytes, base64/base64url. HKDF-SHA256 derives the key-encryption key (`info="provider-keys-v1"`) and the source-id HMAC key (`info="source-id-v1"`). Never rotated by tooling (rotation orphans stored keys). |
 | `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
-| `DATABASE_URL_POOLED` (preferred) or `DATABASE_URL` | yes, unless `ROUTER_STORE=memory` | PostgreSQL URL of the store (Neon: the `-pooler` endpoint for `DATABASE_URL_POOLED`). In production `sslmode` must be `require`, `verify-ca` or `verify-full`; `channel_binding` may be `require`, `prefer` or `disable`; any other `ssl*` parameter or `uselibpqcompat` is refused (pg would let it override the TLS settings). A refused URL is reported as its variable's name; neither set → `DATABASE_URL_POOLED/DATABASE_URL`. Both values and the passwords in them are scrubbed from every output (§8). |
+| `DATABASE_URL_POOLED` (preferred) or `DATABASE_URL` | yes, unless `ROUTER_STORE=memory` | PostgreSQL URL of the store (Neon: the `-pooler` endpoint for `DATABASE_URL_POOLED`). In production the URL must name its host, user and password, and `sslmode` must be `require`, `verify-ca` or `verify-full`; `channel_binding` may be `require`, `prefer` or `disable`; any other `ssl*` parameter or `uselibpqcompat` is refused (pg would let it override the TLS settings). A refused URL is reported as its variable's name; neither set → `DATABASE_URL_POOLED/DATABASE_URL`. Both values and the passwords in them are scrubbed from every output (§8). |
 | `ROUTER_STORE=memory` | dev/test only | Refused when `VERCEL` is set or `NODE_ENV=production`. |
 | `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` | no | Upstream origin overrides (tests/bench). |
 | `TRUST_PROXY_HEADERS` | no | Take the client IP from `x-vercel-forwarded-for`, then `x-real-ip` (Vercel overwrites both; client-supplied values are not forwarded). Implied true when `VERCEL=1`; tests set it to simulate many sources. Otherwise the socket address is used. |
@@ -403,9 +411,9 @@ as zero.
 
 ## 8. Events, logging, redaction
 
-- `michael_router.events` rows; each append inserts, then deletes all but the newest 200 (ids
-  above the highest minus 200, skipping rows another trim holds), so concurrent appends leave at
-  most 200. Listed newest first. Event: `{ts, kind: auth|upstream|gateway, code,
+- `michael_router.events` rows; each append inserts, then deletes every row older than the 200th
+  newest (by rank, so gaps in the identity ids change nothing; rows another trim holds are
+  skipped), so concurrent appends leave exactly the newest 200. Listed newest first. Event: `{ts, kind: auth|upstream|gateway, code,
   status, upstream_status?, provider?, model?, message, source? (auth only, display form),
   request_id}`. `message` is a fixed gateway sentence chosen by `code` (`EVENT_MESSAGES` in
   `src/events.js`; for a provider's own code, "The provider answered HTTP n." or, for an error
@@ -561,8 +569,10 @@ password, its hash, `ROUTER_SECRET`, a database URL with its password or a real 
   every commit and tag object, for: real-shaped provider keys (Anthropic `sk-ant-api…`/
   `sk-ant-admin…` and OAuth `sk-ant-oat…`/`sk-ant-ort…`, OpenRouter `sk-or-v1-<64 hex>`, Google
   `AIza<35>`), `scrypt$…` password hashes (also escaped or URL-encoded), private-key blocks,
-  token shapes assigned to the Vercel and former REST-store token variables, `redis://` and
-  `postgres://` URL credentials (not on `.test` hosts) and absolute home-directory paths; plus
+  token shapes assigned to the Vercel and former REST-store token variables, `redis://` URL
+  credentials, Postgres credentials (`postgres://` URLs in any case, JSON-escaped or `jdbc:`, with
+  the password in the user info or a `password` parameter; `PGPASSWORD` given a value; libpq
+  `host=… password=…` strings; never on `.test` hosts) and absolute home-directory paths; plus
   exact literal values supplied on stdin (one per line, also checked in base64, base64url,
   URL-encoded and JSON-escaped forms). Archives, missing objects and very large files are
   reported as unscanned findings, never passed as clean. Output is counts and locations only

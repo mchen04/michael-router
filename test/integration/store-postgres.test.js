@@ -113,17 +113,37 @@ test('20 parallel usage writers with shuffled entries: exact totals, no deadlock
   }
 });
 
-test('300 parallel event appends: at most 200 rows remain, the newest, listed newest first, all valid JSON', async () => {
+test('300 parallel event appends with rolled-back inserts among them: exactly the newest 200 remain, listed newest first', async () => {
   const { url, store } = await migratedStore('burst_events');
   try {
-    await Promise.all(range(300).map((i) => store.appendEvent(JSON.stringify({ kind: 'auth', i }), 200)));
+    /** Ids taken by inserts that rolled back: gaps in the identity sequence, never rows. */
+    const discarded = new Set();
+    const gap = () =>
+      withClient(url, async (c) => {
+        await c.query('BEGIN');
+        const { rows } = await c.query("INSERT INTO michael_router.events (event) SELECT '{}' FROM generate_series(1, 20) RETURNING id");
+        await c.query('ROLLBACK');
+        for (const r of rows) discarded.add(Number(r.id));
+      });
+    /** @type {Promise<void>[]} */
+    const gaps = [];
+    let done = 0;
+    await Promise.all(
+      range(300).map(async (i) => {
+        await store.appendEvent(JSON.stringify({ kind: 'auth', i }), 200);
+        if (++done % 50 === 0) gaps.push(gap()); // while the later appends run
+      }),
+    );
+    await Promise.all(gaps);
+
     const listed = await store.listEvents(1000);
     const { rows } = await withClient(url, (c) => c.query('SELECT id, event::text AS event FROM michael_router.events ORDER BY id DESC'));
-    assert.ok(rows.length > 0 && rows.length <= 200, `${rows.length} rows`);
+    const { rows: seq } = await withClient(url, (c) => c.query("SELECT pg_sequence_last_value(pg_get_serial_sequence('michael_router.events', 'id')::regclass) AS last"));
+    const appended = range(Number(seq[0].last)).filter((id) => !discarded.has(id));
+    assert.equal(appended.length, 300, 'every other id belongs to an append');
+    assert.deepEqual(rows.map((r) => Number(r.id)).reverse(), appended.slice(-200), 'exactly the 200 newest appends remain');
     assert.deepEqual(listed, rows.map((r) => r.event), 'listed newest (highest id) first');
-    const ids = rows.map((r) => Number(r.id));
-    assert.ok(Math.min(...ids) > 300 - 200, `kept ids ${Math.min(...ids)}..${Math.max(...ids)} are the newest`);
-    assert.equal(new Set(listed.map((t) => JSON.parse(t).i)).size, listed.length);
+    assert.equal(new Set(listed.map((t) => JSON.parse(t).i)).size, 200);
   } finally {
     await store.close();
   }

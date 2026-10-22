@@ -68,6 +68,12 @@ export function checkMs(n) {
   return /** @type {number} */ (n);
 }
 
+/** How many events to keep: a positive safe integer. @param {unknown} n */
+export function checkCount(n) {
+  if (!Number.isSafeInteger(n) || /** @type {number} */ (n) < 1) throw new TypeError('the event count must be a positive integer');
+  return /** @type {number} */ (n);
+}
+
 /**
  * @typedef {{blockUntilMs: number | null, waitUntilMs: number | null, failures: number, inflight: number,
  *   keys: Record<string, string>}} Precheck

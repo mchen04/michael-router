@@ -23,6 +23,25 @@ function decode(s) {
   }
 }
 
+/** The host pg connects to: the `host` parameter when present, else the URL's host name. @param {URL} url */
+export function urlHost(url) {
+  return url.searchParams.get('host') || decode(url.hostname.replace(/^\[(.+)\]$/, '$1'));
+}
+
+/**
+ * The first part a production URL lacks, or null. A production URL names its host (the host name
+ * or a `host` parameter), user and password itself: pg fills a missing one from PGHOST, PGUSER or
+ * PGPASSWORD (or a password file), which the deployment does not control.
+ * @param {URL} url
+ * @returns {'host' | 'user' | 'password' | null}
+ */
+export function missingUrlPart(url) {
+  if (!urlHost(url)) return 'host';
+  if (!url.username) return 'user';
+  if (!url.password) return 'password';
+  return null;
+}
+
 /**
  * @param {string} raw
  * @param {{production: boolean}} options
@@ -36,13 +55,13 @@ export function parseDatabaseUrl(raw, { production }) {
     return null;
   }
   if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') return null;
+  if (production && missingUrlPart(url)) return null;
   const params = url.searchParams;
   for (const name of params.keys()) if ((name.startsWith('ssl') && name !== 'sslmode') || name === 'uselibpqcompat') return null;
   const sslmode = params.get('sslmode');
   const binding = params.get('channel_binding');
   if (binding !== null && !CHANNEL_BINDING.has(binding)) return null;
-  // pg connects to the `host` parameter when present, else to the URL's host name.
-  const host = params.get('host') || decode(url.hostname.replace(/^\[(.+)\]$/, '$1'));
+  const host = urlHost(url);
   let ssl;
   if (sslmode !== null && TLS_MODES.has(sslmode)) ssl = true;
   else if (!production && isLocal(host) && (sslmode === null || PLAIN_MODES.has(sslmode))) ssl = false;

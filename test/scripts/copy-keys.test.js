@@ -318,6 +318,7 @@ test('database URLs are checked before any upload: shape, TLS, the router rules 
     ['DATABASE_URL_POOLED', 'https://router:pw@db.example.test/db_SENTINEL?sslmode=require', 'the database URL must start with postgres:// or postgresql://'],
     ['DATABASE_URL_POOLED', 'postgresql://router@db.example.test/db_SENTINEL?sslmode=require', 'the database URL has no password'],
     ['DATABASE_URL', 'postgresql://:pw@db.example.test/db_SENTINEL?sslmode=require', 'the database URL has no user'],
+    ['DATABASE_URL', 'postgresql:///db_SENTINEL?sslmode=require', 'the database URL has no host'],
     ['DATABASE_URL', local(''), 'the database URL must set sslmode=require or sslmode=verify-full'],
     ['DATABASE_URL', local('?sslmode=verify-ca'), 'the database URL must set sslmode=require or sslmode=verify-full'],
     ['DATABASE_URL', local('?sslmode=require&sslrootcert=/x'), 'the router would refuse this database URL'],
@@ -330,7 +331,7 @@ test('database URLs are checked before any upload: shape, TLS, the router rules 
     assert.equal(r.code, 3, `${url}: ${r.stdout}${r.stderr}`);
     assert.ok(r.stdout.includes(`STOPPED at ${name} (source stdin-env:${name}): ${reason}`), `${url}: ${r.stdout}`);
     assert.deepEqual(adds(await fakes.calls()), []);
-    await assertNoSecretLeaked([url, new URL(url).host], r);
+    await assertNoSecretLeaked([url, new URL(url).host].filter(Boolean), r);
   }
   const ok = await runCopy(['--manifest', await manifest(DATABASE), '--check'], { input: databaseDocument(neon('ep-fake-sentinel-0001-pooler'), neon('ep-fake-sentinel-0001')) });
   assert.equal(ok.code, 0, ok.stdout + ok.stderr);

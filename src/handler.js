@@ -123,8 +123,10 @@ const round1 = (ms) => Math.round(ms * 10) / 10;
  *   logSink?: (line: string) => void,
  *   errorSink?: (line: string) => void,
  *   attachDatabasePool?: (pool: import('pg').Pool) => void,
- * }} [options] everything except `env`, `waitUntil` and `attachDatabasePool` (Vercel's, which closes
- *   idle database clients before an instance suspends) is for tests/dev
+ * }} [options] everything except `env`, `waitUntil` and `attachDatabasePool` is for tests/dev
+ *   (Vercel's attachDatabasePool keeps the instance alive for the pool's idle timeout plus about
+ *   100 ms after each client release, so pg-pool closes its idle clients before the instance
+ *   suspends)
  */
 export function createHandler(options = {}) {
   const config = loadConfig(options.env ?? {});

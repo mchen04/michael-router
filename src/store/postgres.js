@@ -11,12 +11,12 @@
 //   committed row version, so concurrent calls on one source serialize on that row lock and
 //   none is lost. authFailure's sweep of dead rows runs after its upsert (PostgreSQL runs a data-
 //   modifying WITH query that the outer query does not read once the outer query is done) and
-//   takes its locks with SKIP LOCKED, so it never waits: the only lock any statement waits for is
-//   the first one it takes, and a cycle cannot form.
+//   takes its locks with SKIP LOCKED, so it never waits: the only lock an auth_sources statement
+//   waits for is the first one it takes, and a cycle cannot form.
 // - usage_daily: one INSERT … SELECT FROM unnest(…) GROUP BY … ORDER BY (provider, model, metric)
-//   COLLATE "C" … ON CONFLICT DO UPDATE SET value = value + excluded.value. Every writer locks its
-//   rows in that one byte order, so two writers cannot wait on each other in a cycle; the purge of
-//   old days uses SKIP LOCKED and never waits.
+//   COLLATE "C" … ON CONFLICT DO UPDATE SET value = value + excluded.value. It may wait on several
+//   row locks, but every writer locks its rows in that one byte order, so two writers cannot wait
+//   on each other in a cycle; the purge of old days uses SKIP LOCKED and never waits.
 // - events: see appendEvent.
 //
 // Timeouts: waiting for a client (queued or newly connecting, TLS and authentication included)
@@ -33,6 +33,7 @@ import {
   STRIKES_TTL_MS,
   SWEEP_LIMIT,
   StoreError,
+  checkCount,
   checkDay,
   checkMs,
   checkUsageEntries,
@@ -169,14 +170,17 @@ ORDER BY day, provider COLLATE "C", model COLLATE "C", metric COLLATE "C"`,
 
   appendEvent: 'INSERT INTO michael_router.events (event) VALUES ($1::json)',
 
-  // A separate statement after the insert committed: its snapshot then includes this event and
-  // every event whose insert committed earlier, so the last trim to start sees every row and
-  // leaves at most `max`. Rows another trim holds are skipped (that trim deletes them), so no
-  // trim ever waits.
+  // By rank, not by id distance: identity values have gaps (a rolled-back insert, sequence values
+  // lost in a crash), so the cutoff is the id of the max-th newest row (backwards over the primary
+  // key; none while fewer rows exist, and then nothing is deleted). A separate statement after the
+  // insert committed: its snapshot then includes this event and every event whose insert
+  // committed earlier, and every trim deletes only rows below the newest `max` it saw, so the last
+  // trim to start leaves exactly the newest `max`. Rows another trim holds are skipped (that trim
+  // deletes them), so no trim ever waits.
   trimEvents: `DELETE FROM michael_router.events d
 WHERE d.id IN (
   SELECT o.id FROM michael_router.events o
-  WHERE o.id <= (SELECT max(m.id) FROM michael_router.events m) - $1::bigint
+  WHERE o.id < (SELECT c.id FROM michael_router.events c ORDER BY c.id DESC OFFSET ($1::bigint - 1) LIMIT 1)
   FOR UPDATE SKIP LOCKED)`,
 
   listEvents: 'SELECT event::text AS event FROM michael_router.events ORDER BY id DESC LIMIT $1',
@@ -312,7 +316,7 @@ export function createPostgresStore(config, { onPool, max = POOL_MAX, statementT
     },
 
     async appendEvent(json, max) {
-      checkMs(max);
+      checkCount(max);
       await run(async (client) => {
         await client.query(SQL.appendEvent, [text(json)]);
         await client.query(SQL.trimEvents, [max]);

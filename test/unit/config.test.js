@@ -100,6 +100,12 @@ test('store configuration: DATABASE_URL_POOLED, else DATABASE_URL; TLS required 
     assert.deepEqual(problems(prod, url), ['DATABASE_URL']);
     assert.ok(loadConfig({ ...prod, DATABASE_URL: url }).secrets.includes(url), 'a refused value is still scrubbed');
   }
+  // Production: the URL itself names the host, user and password (pg would take a missing one
+  // from PGHOST, PGUSER or PGPASSWORD).
+  for (const url of ['postgresql:///router?sslmode=require', 'postgresql://:pw@db.example.test/router?sslmode=require', 'postgresql://router@db.example.test/router?sslmode=require']) {
+    assert.deepEqual(problems(prod, url), ['DATABASE_URL'], url);
+    assert.deepEqual([...loadConfig({ ...prod, DATABASE_URL_POOLED: url }).problems], ['DATABASE_URL_POOLED'], url);
+  }
 
   // Development (tests): loopback hosts and unix-socket directories may skip TLS; production never.
   const socket = 'postgresql://router@localhost/router?host=%2Fvar%2Frun%2Fpostgresql';

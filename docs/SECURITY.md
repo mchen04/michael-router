@@ -372,12 +372,17 @@ a checkout are not uploaded (`DEPLOY.md` step 5).
   separators; PEM private-key headers; token-shaped values assigned to
   `UPSTASH_REDIS_REST_TOKEN`, `KV_REST_API_TOKEN`, `VERCEL_TOKEN` or `--token` (by context, to stay
   conservative); credentials in `redis://`, `rediss://`, `postgres://` and `postgresql://` URLs
-  (a password of at least 8 characters; not reported: a password that is a template placeholder
-  such as `${password}`, and database URLs on a host under the reserved `.test` top-level domain,
-  which never resolves: test fixtures); absolute home paths
-  (`/Users/<name>`, `/home/<name>`, with or without a trailing slash, also as `HOME=…`, not inside
-  URLs or longer paths). Test fixtures are fake-shaped on purpose (`sk-ant-fake-…`, `AIzaFAKE…`
-  shorter than a real key), and placeholders such as `/Users/<name>` do not match.
+  (a password of at least 8 characters, in the user info or, for Postgres, in a `password`
+  parameter; Postgres schemes in any case, with JSON-escaped slashes, or as `jdbc:postgresql://`);
+  `PGPASSWORD` given a value (`PGPASSWORD=…`, a quoted value after `:` or `=`, or an unquoted
+  `PGPASSWORD: …` with a digit in it; not `$NAME`, `${…}` or `%NAME%` references); libpq
+  keyword/value strings that name both `host=` and `password=…` (for the Postgres rules, not
+  reported: a password that is a template placeholder such as `${password}`, and credentials for
+  a host under the reserved `.test` top-level domain, which never resolves: test fixtures);
+  absolute home paths (`/Users/<name>`, `/home/<name>`, with or without a trailing slash, also as
+  `HOME=…`, not inside URLs or longer paths). Test fixtures are fake-shaped on purpose
+  (`sk-ant-fake-…`, `AIzaFAKE…` shorter than a real key), and placeholders such as
+  `/Users/<name>` do not match.
 - `--literals-stdin` adds exact values read from stdin, one per line (never argv, at least 8
   characters), also in base64 and base64url at each of the three byte alignments, URL-encoded
   with upper- and lowercase hex, and JSON-escaped (`\"`, `\\`, also with `\/`).
@@ -451,7 +456,8 @@ errors keep only the SQLSTATE. The secret scan reports database URLs with creden
 
 **TLS.** In production the URL must set `sslmode` `require`, `verify-ca` or `verify-full`; each
 connects with certificate and host-name verification against the system CAs (verify-full
-semantics, stricter than libpq's `require`). With `channel_binding=require` (or `prefer`), pg
+semantics, stricter than libpq's `require`). Channel binding is on whenever TLS is, unless the
+URL sets `channel_binding=disable` (so also with `prefer` or no `channel_binding` at all): pg then
 uses SCRAM-SHA-256-PLUS when the server offers it, but pg does not refuse a server that offers no
 binding, so `channel_binding=require` is not enforced: the verified certificate is what binds
 the connection to the server. Any other `ssl*` parameter is refused, since pg would let it
@@ -459,8 +465,10 @@ override these settings.
 
 **No `PG*` variables in the deployment.** pg fills in whatever the URL leaves out from `PG*`
 environment variables (for example `PGPORT` or `PGOPTIONS`, which can change session settings),
-so the deployment must not set any; a database integration that adds `PG*` variables or further
-copies of the URL is not used (`DEPLOY.md` step 4.3). The migrate command removes them from its
+so the deployment must not set any, and in production the router refuses a URL that leaves out
+the host, the user or the password (`PGHOST`, `PGUSER`, `PGPASSWORD` or a password file would
+supply them); a database integration that adds `PG*` variables or further copies of the URL is
+not used (`DEPLOY.md` step 4.3). The migrate command removes them from its
 own environment (§9.4).
 
 **Least privilege.** The router runs no DDL: at request time it reads `schema_migrations` and

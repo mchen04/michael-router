@@ -2,7 +2,7 @@
 // rows, end times from the caller's clock (a field is active while its end time is later than
 // now), the same sweep. Each method runs synchronously, so each is atomic. For ROUTER_STORE=memory
 // (development and tests; refused in production) and the in-process test harness.
-import { INFLIGHT_TTL_MS, STRIKES_TTL_MS, SWEEP_LIMIT, checkDay, checkMs, checkUsageEntries } from './contract.js';
+import { INFLIGHT_TTL_MS, STRIKES_TTL_MS, SWEEP_LIMIT, checkCount, checkDay, checkMs, checkUsageEntries } from './contract.js';
 import { LATEST_SCHEMA_VERSION } from './migrations.js';
 
 /**
@@ -169,7 +169,7 @@ export function createMemoryStore() {
     /** @param {string} json @param {number} max */
     async appendEvent(json, max) {
       JSON.parse(checkText(json)); // Postgres stores it as json, which must parse
-      checkMs(max);
+      checkCount(max);
       events.push({ id: nextEventId++, event: json });
       if (events.length > max) events = events.slice(events.length - max);
     },

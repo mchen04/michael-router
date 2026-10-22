@@ -36,7 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { hashPassword, parsePasswordHash } from '../src/auth.js';
 import { MIN_PASSWORD_LENGTH, providerKeyProblem } from '../src/config.js';
 import { scrub } from '../src/redact.js';
-import { parseDatabaseUrl } from '../src/store/database-url.js';
+import { missingUrlPart, parseDatabaseUrl, urlHost } from '../src/store/database-url.js';
 import { envValue, parseEnvDocument, readStdin } from './lib/env-document.mjs';
 
 export const EXIT = Object.freeze({ OK: 0, ERROR: 1, USAGE: 2, STOPPED: 3 });
@@ -560,12 +560,10 @@ export function valueProblem(entry, value) {
   }
 }
 
-/** The host pg connects to: the `host` parameter when present, else the URL's host name. @param {URL} url */
-const effectiveHost = (url) => (url.searchParams.get('host') || url.hostname.replace(/^\[(.+)\]$/, '$1')).toLowerCase();
-
 /**
  * Why a database URL may not be uploaded as `name`, or null: the router's own production rules
- * plus a password, sslmode require or verify-full, and on Neon the endpoint that matches the name
+ * (among them a host, user and password in the URL itself), sslmode require or verify-full, and
+ * on Neon the endpoint that matches the name
  * (DATABASE_URL_POOLED the `-pooler` host, DATABASE_URL the direct one). Never names a part of it.
  * @param {string} name @param {string} text 1-4096 printable ASCII bytes without whitespace
  */
@@ -577,13 +575,12 @@ export function databaseUrlProblem(name, text) {
     return 'the value is not a valid URL';
   }
   if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') return 'the database URL must start with postgres:// or postgresql://';
-  const host = effectiveHost(url);
-  if (!host) return 'the database URL has no host';
-  if (!url.username) return 'the database URL has no user';
-  if (!url.password) return 'the database URL has no password';
+  const missing = missingUrlPart(url); // the router's production rule
+  if (missing) return `the database URL has no ${missing}`;
   const sslmode = url.searchParams.get('sslmode');
   if (sslmode !== 'require' && sslmode !== 'verify-full') return 'the database URL must set sslmode=require or sslmode=verify-full';
   if (!parseDatabaseUrl(text, { production: true })) return 'the router would refuse this database URL (DESIGN §4: no other ssl* parameter, a valid channel_binding)';
+  const host = urlHost(url).toLowerCase();
   if (/\.neon\.tech$/.test(host)) {
     const pooler = host.split('.')[0].endsWith('-pooler');
     if (name === 'DATABASE_URL_POOLED' && !pooler) return 'DATABASE_URL_POOLED must be the pooled endpoint (a -pooler host)';
