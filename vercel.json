@@ -3,6 +3,7 @@
   "framework": null,
   "buildCommand": "",
   "outputDirectory": "public",
+  "regions": ["cle1"],
   "rewrites": [
     { "source": "/v1/:path*", "destination": "/api/router?__route=v1/:path*" },
     { "source": "/control/:path*", "destination": "/api/router?__route=control/:path*" }

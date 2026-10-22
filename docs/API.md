@@ -19,7 +19,7 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 |-----------------|---------|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming and non-streaming |
 | `GET /v1/models` | Known models of the configured providers |
-| `GET /control/health` | Version, region, instance, store latency, which providers are configured |
+| `GET /control/health` | Version, region, instance, store kind, latency and schema version, which providers are configured (below) |
 | `GET /control/keys` | `[{provider, configured, source: "store"\|"env"\|"none", updated_at}]` (never key values) |
 | `PUT /control/keys/:provider` | `{"key": "...", "verify": true}`: store an encrypted key override (with `verify`, only after the provider accepted it; see below) |
 | `DELETE /control/keys/:provider` | Remove the override (falls back to the environment key) |
@@ -28,6 +28,26 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 
 Unknown paths under `/v1/` and `/control/` answer 404 and wrong methods 405, but only after
 authentication, so the route table cannot be probed without the password.
+
+`GET /control/health` answers 200 with:
+
+```json
+{
+  "status": "ok",
+  "version": "<package version>",
+  "commit": "<short commit or null>",
+  "region": "<function region or null>",
+  "instance": { "started_at": "<ISO time>", "age_s": 12, "cold": false },
+  "store": { "kind": "postgres", "latency_ms": 3.2, "schema_version": 1 },
+  "providers": { "claude": { "configured": true }, "gemini": { "configured": true }, "openrouter": { "configured": false } }
+}
+```
+
+`store.kind` is `postgres` in a deployment and `memory` only in local development with
+`ROUTER_STORE=memory`. `store.schema_version` is the highest migration applied to the database
+(the memory store reports the version the code needs); `latency_ms` is the time of the check. A
+store that fails, or whose schema is missing or older than the code needs, makes health answer
+503 `store_unavailable`.
 
 **Key verification.** With `"verify": true` (the CLI default), the gateway checks the key against
 the provider's model or key endpoint (no tokens are spent) *before* storing it, so a bad key never
@@ -268,7 +288,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 429 | `auth_busy` | too many concurrent authentications from this source | after `Retry-After` (1 s) |
 | 500 | `internal_error` | unexpected gateway failure | maybe |
 | 503 | `server_misconfigured` | required configuration missing or invalid (the message names the variables) | no: fix the deployment |
-| 503 | `store_unavailable` | the store failed or was slower than 1.5 s; the request was refused | yes, with backoff |
+| 503 | `store_unavailable` | the store failed, did not connect within 5 s, answered slower than 1.5 s, or its schema is missing or older than the code; the request was refused | yes, with backoff |
 | 503 | `provider_not_configured` | the routed provider has no key | no: configure a key |
 | 502 | `provider_auth_failed` | the provider rejected the router's key for it (an upstream 401, or a Gemini 400 saying "API key not valid" or "API key expired", or with reason `API_KEY_INVALID`) | no: fix the provider key |
 | 502 | `key_verification_unavailable` | `PUT /control/keys` with `verify`: the check could not be completed; the key was not stored | yes, or store with `"verify": false` |
@@ -393,3 +413,7 @@ The fakes reproduce each provider's wire format (Anthropic's typed events, Gemin
 framing, OpenRouter's comment lines and `usage.cost`). A model name ending in `fake-<scenario>`
 selects a behavior, for example `claude-fake-429`, `gemini-fake-midstream-error` or
 `vendor/fake-truncated`; the scenarios are listed at the top of `dev/fake-providers.js`.
+
+To run against PostgreSQL instead of the memory store, replace `ROUTER_STORE=memory` with
+`DATABASE_URL=<URL of a local database>` and migrate that database first (`DEPLOY.md` step 3.1).
+Outside production, a URL without TLS is accepted only for a loopback host or a unix socket.

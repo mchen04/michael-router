@@ -54,6 +54,16 @@ export function parseDatabaseUrl(raw, { production }) {
 }
 
 /**
+ * The pg connection options for a parsed URL, shared by the store and the operator's migrate
+ * command so that both connect the same way: TLS with verify-full semantics (the system CAs, and
+ * the host name, which pg also sends as SNI) and channel binding when enabled.
+ * @param {{connectionString: string, ssl: boolean, channelBinding: boolean}} config from parseDatabaseUrl
+ */
+export function pgConnectionOptions({ connectionString, ssl, channelBinding }) {
+  return { connectionString, ssl: ssl ? { rejectUnauthorized: true } : false, enableChannelBinding: channelBinding };
+}
+
+/**
  * Secret parts of a configured URL, for the redactor: the whole value and its password (as
  * written and decoded, from the user info or a `password` parameter). Never throws.
  * @param {string | undefined} raw

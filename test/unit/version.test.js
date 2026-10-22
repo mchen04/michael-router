@@ -17,11 +17,12 @@ test('package.json and vercel.json match DESIGN §2/§11', () => {
   assert.equal(pkg.private, true);
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.engines.node, '24.x');
-  assert.deepEqual(Object.keys(pkg.dependencies), ['@vercel/functions']);
+  assert.deepEqual(Object.keys(pkg.dependencies), ['@vercel/functions', 'pg']);
   assert.equal(pkg.devDependencies, undefined);
   assert.equal(vercel.framework, null);
   assert.equal(vercel.outputDirectory, 'public');
   assert.equal(vercel.buildCommand, '');
+  assert.deepEqual(vercel.regions, ['cle1'], 'the function runs next to the database (DEPLOY.md step 5.1)');
   assert.deepEqual(vercel.rewrites, [
     { source: '/v1/:path*', destination: '/api/router?__route=v1/:path*' },
     { source: '/control/:path*', destination: '/api/router?__route=control/:path*' },

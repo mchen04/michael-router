@@ -37,6 +37,7 @@ import {
   checkMs,
   checkUsageEntries,
 } from './contract.js';
+import { pgConnectionOptions } from './database-url.js';
 import { LATEST_SCHEMA_VERSION } from './migrations.js';
 
 const POOL_MAX = 5;
@@ -187,12 +188,9 @@ WHERE d.id IN (
  *   onPool: called once with the pool (Vercel's attachDatabasePool); max and statementTimeoutMs for tests
  * @returns {import('./contract.js').Store & {close: () => Promise<void>}}
  */
-export function createPostgresStore({ connectionString, ssl, channelBinding }, { onPool, max = POOL_MAX, statementTimeoutMs = STORE_TIMEOUT_MS } = {}) {
+export function createPostgresStore(config, { onPool, max = POOL_MAX, statementTimeoutMs = STORE_TIMEOUT_MS } = {}) {
   const pool = new pg.Pool({
-    connectionString,
-    // verify-full: the system CAs, and the host name pg also sends as SNI.
-    ssl: ssl ? { rejectUnauthorized: true } : false,
-    enableChannelBinding: channelBinding,
+    ...pgConnectionOptions(config),
     application_name: 'michael-router',
     max,
     idleTimeoutMillis: IDLE_TIMEOUT_MS,

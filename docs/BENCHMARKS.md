@@ -1,9 +1,17 @@
 # Benchmarks
 
 How Michael Router's latency is measured, what each number means, and the summary of every
-measurement round. Local numbers are mocked evidence: a local fake upstream and a local fake
-Upstash, never a real provider, store or credential. Raw distributions are written to the
-gitignored `evidence/` directory; this file holds summaries only. DESIGN §12 sets the rules.
+measurement round. Local numbers are mocked evidence: a local fake upstream and a local store,
+never a real provider, store or credential. Raw distributions are written to the gitignored
+`evidence/` directory; this file holds summaries only. DESIGN §12 sets the rules.
+
+**Historical numbers.** Every number in this file (rounds 0–3) was measured with the router's
+previous store, an Upstash REST store, simulated by a local fake Upstash with a configurable
+delay (0 and 3 ms), on historical hosts. The router now keeps its state in PostgreSQL, and that
+path has not been measured, locally or live: nothing below includes it. The scripts now run the
+router with the in-process memory store and have no store-delay flag, because a fixed delay
+cannot stand in honestly for a pooled PostgreSQL connection (its pool, TLS handshake and server
+time); the store's cost will show only in live numbers.
 
 Rounds 0–3 all ran on one shared arm64 macOS machine (10 cores, 24 GB, Node 24.22) while other
 work was running on it, so their results are subject to interference. That machine is no longer
@@ -16,11 +24,12 @@ for a Vercel deployment. The deployment-relevant numbers are the live ones, meas
 ### Gateway overhead (`bench/overhead.mjs`)
 
 - Processes: `bench/fake-upstream.mjs` (fixed OpenAI-compatible and Anthropic Messages replies,
-  serialized once at startup); for each store delay, one `dev/fake-upstash.js --delay-ms <d>` and
-  one `dev/server.js`. The router uses the production settings apart from TLS: the Upstash REST
-  store protocol, a scrypt password hash with the production parameters (logN 15), and fake
-  provider keys. The password, its hash, `ROUTER_SECRET` and the store token are generated per
-  run. The benchmark process is the client: node:http with keep-alive.
+  serialized once at startup) and one `dev/server.js` with the in-process memory store
+  (`ROUTER_STORE=memory`). The router uses the production settings apart from TLS and the store:
+  a scrypt password hash with the production parameters (logN 15), and fake provider keys. The
+  password, its hash and `ROUTER_SECRET` are generated per run. The benchmark process is the
+  client: node:http with keep-alive. Rounds 0–3 ran one router per store delay instead, each
+  against its own fake of the previous store.
 - Four targets per iteration, sent back to back in ABBA order (reversed on odd iterations, so
   drift cancels within each pair):
   - `direct_openai`: client → fake upstream.
@@ -32,8 +41,8 @@ for a Vercel deployment. The deployment-relevant numbers are the live ones, meas
   - 8 concurrent workers, 2000 iterations.
 
   Each phase runs non-streaming and streaming, every one after 100 discarded warm-up
-  iterations. Each phase runs at every store delay (0 and 3 ms) before the next phase starts. A
-  streamed reply is 8 text deltas, 1 ms apart, plus the closing events.
+  iterations (rounds 0–3 ran each phase at both store delays, 0 and 3 ms, before the next one).
+  A streamed reply is 8 text deltas, 1 ms apart, plus the closing events.
 - Every response is checked: status 200 and the expected end of the body. A run with any failed
   request aborts.
 
@@ -99,14 +108,16 @@ Each run writes `samples.json`, `summary.json` and `summary.md` into `--out`, to
 
 Other overhead flags:
 
-- `--store-delays 0,3`, `--n`, `--n-concurrent`, `--warmup`, `--concurrency`;
+- `--n`, `--n-concurrent`, `--warmup`, `--concurrency` (rounds 0–3 also used `--store-delays 0,3`,
+  since removed);
 - `--chunks`, `--interval-ms`: the stream shape;
 - `--resamples`: bootstrap resamples.
 
 ## 3. Reading the numbers
 
 - **ttfb**: client time to the first body byte. **total**: client time to the last byte.
-- **Overhead**: gateway − direct, in ms, with the router's store round trip included.
+- **Overhead**: gateway − direct, in ms, with the router's store calls included (in rounds 0–3 the
+  fake store's round trip; now the in-process store's, which is close to 0).
   - **diff of percentiles**: gateway pN − direct pN.
   - **paired**: percentiles of the per-iteration differences (gateway minus the direct request
     taken next to it). Its median comes with a bootstrap 95% confidence interval.
@@ -128,12 +139,13 @@ Other overhead flags:
 
 ## 4. Caveats
 
-- **Store latency.** The fake store's round trip is not Upstash's. Store delay 3 ms is a modelled
-  same-region round trip, and on the benchmark host it cost about 3.6 ms (`store` p50), because of
-  timer granularity. A function instance's first store call also pays for TCP and TLS, which a
-  local run does not.
+- **Store latency.** In rounds 0–3 the fake store's round trip was not the real store's: store
+  delay 3 ms was a modelled same-region round trip, and on the benchmark host it cost about 3.6 ms
+  (`store` p50), because of timer granularity. The current scripts include no store round trip at
+  all. A function instance's PostgreSQL calls, and the first one's TCP and TLS set-up, show only
+  in live numbers, and none have been measured yet.
 - **No TLS anywhere locally.** Production mode requires https, so the router runs in development
-  mode with the production store protocol, hashing and keys.
+  mode with the production hashing and keys (rounds 0–3 also with the production store protocol).
 - **Host.** Rounds 0–3 ran on one shared, interference-prone 10-core arm64 macOS machine with
   24 GB and Node 24.22, not Vercel hardware. It is no longer used for benchmarks. Its numbers are
   results from that host, not guarantees for a Vercel deployment, and absolute values transfer

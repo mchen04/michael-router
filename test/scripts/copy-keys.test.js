@@ -1,8 +1,9 @@
 // scripts/copy-keys-to-vercel.mjs against fake `vercel`, `security` and `op` executables placed
 // first on PATH. Every source value is an invented sentinel; the tests prove the values arrive
 // byte-exact on the fake's stdin and never anywhere else (argv, output, files, child env).
-// The script runs as a copy inside a scratch repository (with src/ and package.json), so the
-// tests control <repo>/.vercel/project.json and never touch the checkout's own link.
+// The script runs as a copy inside a scratch repository (with scripts/lib/, src/ and
+// package.json), so the tests control <repo>/.vercel/project.json and never touch the checkout's
+// own link.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -66,6 +67,7 @@ before(async () => {
   script = path.join(repo, 'scripts', 'copy-keys-to-vercel.mjs');
   await mkdir(path.dirname(script), { recursive: true });
   await copyFile(path.join(REPO, 'scripts', 'copy-keys-to-vercel.mjs'), script);
+  await cp(path.join(REPO, 'scripts', 'lib'), path.join(repo, 'scripts', 'lib'), { recursive: true });
   await copyFile(path.join(REPO, 'package.json'), path.join(repo, 'package.json'));
   await cp(path.join(REPO, 'src'), path.join(repo, 'src'), { recursive: true });
   await mkdir(path.join(home, 'secrets'), { recursive: true });
@@ -198,10 +200,13 @@ test('without --yes it prints the project, the plan and a digest of all three, a
     assert.doesNotMatch(other.stdout, new RegExp(`sha256:${digest}`), 'the digest covers the project');
   }
 
-  // The shipped example manifest is valid as written.
+  // The shipped example manifests are valid as written.
   const example = await runCopy(['--manifest', path.join(REPO, 'scripts', 'key-sources.example.json')]);
   assert.equal(example.code, 0, example.stderr);
   assert.match(example.stdout, /^Vercel project: prj_example \(org team_example\)\nPlan: 5 entries for Vercel environment "production"/);
+  const database = await runCopy(['--manifest', path.join(REPO, 'scripts', 'database-sources.example.json')]);
+  assert.equal(database.code, 0, database.stderr);
+  assert.match(database.stdout, /^Vercel project: prj_example \(org team_example\)\nPlan: 1 entry for Vercel environment "production", in this order:\n {2}1\. DATABASE_URL_POOLED <- stdin-env:DATABASE_URL_POOLED\n/);
 });
 
 test('--yes transfers every source type byte-exact on stdin and nothing leaks anywhere', { skip }, async () => {
@@ -210,7 +215,7 @@ test('--yes transfers every source type byte-exact on stdin and nothing leaks an
   assert.equal(r.code, 0, r.stdout + r.stderr);
   for (const [i, e] of FULL.entries()) assert.match(r.stdout, new RegExp(`^\\[${i + 1}/5\\] ${e.env}: set \\(sensitive\\)$`, 'm'));
   assert.match(r.stdout, /^Present in Vercel production \(names only\): ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, ROUTER_PASSWORD_HASH, ROUTER_SECRET$/m);
-  assert.match(r.stdout, /^Store: no complete store pair/m);
+  assert.match(r.stdout, /^Store: neither DATABASE_URL_POOLED nor DATABASE_URL is present; protected routes answer 503/m);
   assert.doesNotMatch(r.stdout, /RAW-LS-OUTPUT/, 'raw vercel env ls output is never printed');
 
   const calls = await fakes.calls();
@@ -253,6 +258,95 @@ test('--yes transfers every source type byte-exact on stdin and nothing leaks an
   assert.deepEqual(config.problems, []);
 
   await assertNoSecretLeaked([...Object.values(VALUES), captured.ROUTER_PASSWORD_HASH, captured.ROUTER_SECRET], r);
+});
+
+/** stdin-env entries for the two database URLs, both read from one dotenv document on stdin. */
+const DATABASE = [
+  { env: 'DATABASE_URL_POOLED', source: { type: 'stdin-env', var: 'DATABASE_URL_POOLED' } },
+  { env: 'DATABASE_URL', source: { type: 'stdin-env', var: 'DATABASE_URL' } },
+];
+const POOLED = 'postgresql://router:db-pw-SENTINEL-pooled-copy@db-pooler.example.test/router?sslmode=require&channel_binding=require';
+const DIRECT = 'postgresql://router:db-pw-SENTINEL-direct-copy@db.example.test/router?sslmode=verify-full';
+/** @param {string} pooled @param {string} direct */
+const databaseDocument = (pooled, direct) => `# database\nexport DATABASE_URL_POOLED="${pooled}"\nDATABASE_URL='${direct}' # direct endpoint\nOTHER_SETTING=unrelated\n`;
+
+test('stdin-env: plan, --check and --yes read one dotenv document once; each URL reaches only its vercel env add stdin', { skip }, async () => {
+  await configure();
+  const file = await manifest(DATABASE);
+  const plan = await runCopy(['--manifest', file]);
+  assert.equal(plan.code, 0, plan.stderr);
+  assert.match(plan.stdout, /^ {2}1\. DATABASE_URL_POOLED <- stdin-env:DATABASE_URL_POOLED\n {2}2\. DATABASE_URL {8}<- stdin-env:DATABASE_URL\n/m);
+  const digest = /Plan digest: sha256:([0-9a-f]{64})/.exec(plan.stdout)?.[1];
+  assert.ok(digest);
+  const renamed = await runCopy(['--manifest', await manifest([{ ...DATABASE[0], source: { type: 'stdin-env', var: 'NEON_POOLED_URL' } }, DATABASE[1]])]);
+  assert.doesNotMatch(renamed.stdout, new RegExp(digest), 'the digest covers the stdin-env variable');
+  await manifest(DATABASE); // manifest() rewrites one file
+  assert.deepEqual(await fakes.calls(), [], 'the plan runs nothing');
+
+  const input = databaseDocument(POOLED, DIRECT);
+  const check = await runCopy(['--manifest', file, '--check'], { input });
+  assert.equal(check.code, 0, check.stdout + check.stderr);
+  assert.match(check.stdout, new RegExp(`sha256:${digest}`), 'the same digest in every mode');
+  assert.match(check.stdout, /^\[1\/2\] DATABASE_URL_POOLED: ok\n\[2\/2\] DATABASE_URL: ok\nCheck passed: 2 entries; nothing was transferred\.$/m);
+  assert.deepEqual((await fakes.calls()).map((c) => `${c.tool} ${c.argv.join(' ')}`), ['vercel env ls production']);
+
+  await configure();
+  const yes = await runCopy(['--manifest', file, '--yes'], { input });
+  assert.equal(yes.code, 0, yes.stdout + yes.stderr);
+  assert.match(yes.stdout, new RegExp(`sha256:${digest}`));
+  assert.match(yes.stdout, /^\[1\/2\] DATABASE_URL_POOLED: set \(sensitive\)\n\[2\/2\] DATABASE_URL: set \(sensitive\)$/m);
+  assert.match(yes.stdout, /^Store: DATABASE_URL_POOLED is present; the router uses it\.$/m);
+  const calls = await fakes.calls();
+  assert.deepEqual(calls.filter((c) => c.tool === 'vercel').map((c) => c.argv.join(' ')), [
+    'env add --help',
+    'env ls production',
+    'env add DATABASE_URL_POOLED production --force --sensitive',
+    'env add DATABASE_URL production --force --sensitive',
+    'env ls production',
+  ]);
+  const uploaded = Object.fromEntries(calls.filter((c) => c.argv[1] === 'add' && c.argv[2] !== '--help').map((c) => [c.argv[2], c.stdin_sha256]));
+  assert.deepEqual(uploaded, { DATABASE_URL_POOLED: sha(POOLED), DATABASE_URL: sha(DIRECT) }, 'quotes and comment stripped, byte-exact');
+  for (const r of [check, yes]) await assertNoSecretLeaked([POOLED, DIRECT, 'db-pw-SENTINEL-pooled-copy', 'db-pw-SENTINEL-direct-copy'], r);
+});
+
+test('database URLs are checked before any upload: shape, TLS, the router rules and the Neon pooled/direct endpoints', { skip }, async () => {
+  await configure();
+  const neon = (/** @type {string} */ endpoint) => `postgresql://router:pw@${endpoint}.us-east-2.aws.neon.tech/db_SENTINEL?sslmode=require&channel_binding=require`;
+  const local = (/** @type {string} */ rest) => `postgresql://router:pw@db.example.test/db_SENTINEL${rest}`;
+  /** @type {[string, string, string][]} */
+  const refused = [
+    ['DATABASE_URL_POOLED', 'https://router:pw@db.example.test/db_SENTINEL?sslmode=require', 'the database URL must start with postgres:// or postgresql://'],
+    ['DATABASE_URL_POOLED', 'postgresql://router@db.example.test/db_SENTINEL?sslmode=require', 'the database URL has no password'],
+    ['DATABASE_URL', 'postgresql://:pw@db.example.test/db_SENTINEL?sslmode=require', 'the database URL has no user'],
+    ['DATABASE_URL', local(''), 'the database URL must set sslmode=require or sslmode=verify-full'],
+    ['DATABASE_URL', local('?sslmode=verify-ca'), 'the database URL must set sslmode=require or sslmode=verify-full'],
+    ['DATABASE_URL', local('?sslmode=require&sslrootcert=/x'), 'the router would refuse this database URL'],
+    ['DATABASE_URL_POOLED', neon('ep-fake-sentinel-0001'), 'DATABASE_URL_POOLED must be the pooled endpoint (a -pooler host)'],
+    ['DATABASE_URL', neon('ep-fake-sentinel-0001-pooler'), 'DATABASE_URL must be the direct endpoint (not a -pooler host)'],
+  ];
+  for (const [name, url, reason] of refused) {
+    const entry = DATABASE.find((e) => e.env === name);
+    const r = await runCopy(['--manifest', await manifest([entry]), '--yes'], { input: `${name}=${url}\n` });
+    assert.equal(r.code, 3, `${url}: ${r.stdout}${r.stderr}`);
+    assert.ok(r.stdout.includes(`STOPPED at ${name} (source stdin-env:${name}): ${reason}`), `${url}: ${r.stdout}`);
+    assert.deepEqual(adds(await fakes.calls()), []);
+    await assertNoSecretLeaked([url, new URL(url).host], r);
+  }
+  const ok = await runCopy(['--manifest', await manifest(DATABASE), '--check'], { input: databaseDocument(neon('ep-fake-sentinel-0001-pooler'), neon('ep-fake-sentinel-0001')) });
+  assert.equal(ok.code, 0, ok.stdout + ok.stderr);
+
+  // The document itself: a variable missing or set twice, or a malformed line, stops the run.
+  for (const [input, reason] of [
+    [`DATABASE_URL=${DIRECT}\n`, 'DATABASE_URL_POOLED is not set in the dotenv document on stdin'],
+    [`DATABASE_URL_POOLED=${POOLED}\nDATABASE_URL_POOLED=${POOLED}\n`, 'the dotenv document on stdin: DATABASE_URL_POOLED is set more than once'],
+    [`DATABASE_URL_POOLED=${POOLED}\n${DIRECT}\n`, 'the dotenv document on stdin: line 2 is not a NAME=value line'],
+  ]) {
+    const r = await runCopy(['--manifest', await manifest(DATABASE), '--yes'], { input });
+    assert.equal(r.code, 3, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes(`STOPPED at DATABASE_URL_POOLED (source stdin-env:DATABASE_URL_POOLED): ${reason}`), r.stdout);
+    assert.deepEqual(adds(await fakes.calls()), []);
+    await assertNoSecretLeaked([POOLED, DIRECT], r);
+  }
 });
 
 test('without a pinned project nothing runs, so keys never go to an inherited or linked project', { skip }, async () => {
@@ -471,6 +565,8 @@ test('malformed manifests are refused before anything runs', { skip }, async () 
     ['"env" must be one of', [{ env: 'OPENAI_API_KEY', source: { type: 'stdin' } }]],
     ['appears more than once', [{ env: 'ANTHROPIC_API_KEY', source: KEYCHAIN }, { env: 'ANTHROPIC_API_KEY', source: { type: 'op', ref: OP_REF } }]],
     ['at most one entry may read stdin', [stdin, { env: 'ANTHROPIC_API_KEY', source: { type: 'stdin' } }]],
+    ['cannot share stdin', [stdin, { env: 'DATABASE_URL_POOLED', source: { type: 'stdin-env', var: 'DATABASE_URL_POOLED' } }]],
+    ['stdin-env "var" must be a variable name', [{ env: 'DATABASE_URL', source: { type: 'stdin-env', var: 'DATABASE URL' } }]],
     ['"generate" is for ROUTER_SECRET', [{ env: 'ROUTER_SECRET', source: { type: 'generate', bytes: 32 } }]],
     ['not both', [stdin, { env: 'ROUTER_PASSWORD', source: KEYCHAIN }]],
     ['"environment" must be "production"', [stdin], { environment: 'preview' }],

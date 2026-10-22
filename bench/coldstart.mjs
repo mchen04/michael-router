@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // Cold-start benchmark (DESIGN §12). Mocked evidence: the in-process memory store, no provider calls.
 //
-//   node bench/coldstart.mjs --out DIR [--n 30] [--import-n 30] [--warmup 3] [--store-delay-ms 0]
+//   node bench/coldstart.mjs --out DIR [--n 30] [--import-n 30] [--warmup 3]
 //
 // Fresh processes, alternating in order on every iteration:
 //   hello   bench/hello-server.mjs (the node:http baseline)
 //   router  dev/server.js configured like production apart from TLS and the store
-//           (ROUTER_STORE=memory, so the only store delay is 0; scrypt logN 15 password hash,
-//           fake provider keys)
+//           (ROUTER_STORE=memory; scrypt logN 15 password hash, fake provider keys)
+// The PostgreSQL store is not modelled: a fixed delay cannot stand in honestly for its pool,
+// TLS handshake and server round trips, so there is no store-delay flag. The store path is
+// measured only against a deployment (bench/live.mjs).
 // For each: spawn -> "listening" line, spawn -> first successful GET /v1/models with the password,
 // that first request alone, and a second request on the same connection (first-request costs
-// such as scrypt and the first store connection show as first minus second). The router's first
+// such as scrypt show as first minus second). The router's first
 // response must carry `x-router-cold: 1` and the second must not.
 // Module import time: fresh `node` processes timing `await import(<module>)` for an empty module
 // (the cost of the first dynamic import itself), node:http, @vercel/functions, src/handler.js and
@@ -32,7 +34,6 @@ const SPEC = /** @type {const} */ ({
   n: { type: 'int', default: 30, min: 1 },
   'import-n': { type: 'int', default: 30, min: 1 },
   warmup: { type: 'int', default: 3 },
-  'store-delay-ms': { type: 'int', default: 0, max: 0 },
 });
 const KEYS = { ANTHROPIC_API_KEY: 'sk-ant-fake-bench-0001', GEMINI_API_KEY: 'AIzaFAKE-bench-0001' };
 const IMPORTS = ['data:text/javascript,', 'node:http', '@vercel/functions', pathToFileURL(path.join(ROOT, 'src/handler.js')).href, pathToFileURL(path.join(ROOT, 'api/router.js')).href];
@@ -93,13 +94,13 @@ const roundAll = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k,
 function markdown(summary) {
   const { meta, starts, imports } = summary;
   const lines = [
-    '# Cold start (local fake store: mocked evidence)',
+    '# Cold start (in-process memory store: mocked evidence)',
     '',
     `- Command: \`${meta.command}\``,
     `- Node ${meta.node}; ${meta.host.cpus}-core ${meta.host.arch} ${meta.host.platform} ${meta.host.release}, ${meta.host.total_mem_gb} GB`,
     `- Build: ${meta.git.head ?? 'unknown'}${meta.git.dirty ? ' (uncommitted changes)' : ''}, digest ${meta.build_digest}`,
     `- Load average (1/5/15 min): before ${Object.values(meta.load_before.loadavg).join('/')}, after ${Object.values(meta.load_after.loadavg).join('/')}`,
-    `- ${meta.config.n} fresh processes per kind (after ${meta.config.warmup} discarded), store delay ${meta.config.store_delay_ms} ms; router x-router-cold correct in ${starts.cold_header_ok} of ${meta.config.n}`,
+    `- ${meta.config.n} fresh processes per kind (after ${meta.config.warmup} discarded), in-process memory store; router x-router-cold correct in ${starts.cold_header_ok} of ${meta.config.n}`,
     '',
     'Times in ms from spawn (listening, first response) or for one request.',
     '',
@@ -144,7 +145,7 @@ async function main() {
   if (!flags.out) throw new Error('--out DIR is required');
   const out = path.resolve(flags.out);
   const meta = runMeta(import.meta.url);
-  meta.config = { n: flags.n, import_n: flags['import-n'], warmup: flags.warmup, store_delay_ms: flags['store-delay-ms'], scrypt: 'logN 15, r 8, p 1 (production default)' };
+  meta.config = { n: flags.n, import_n: flags['import-n'], warmup: flags.warmup, store: 'memory (in-process, not modelled)', scrypt: 'logN 15, r 8, p 1 (production default)' };
   const password = `bench-${randomBytes(18).toString('base64url')}`;
   const passwordHash = await hashPassword(password);
   const kinds = {

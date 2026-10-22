@@ -29,6 +29,7 @@ const PLANTED = [
   'test/x',
   'node_modules/x',
   'api/key-sources.json',
+  'api/database-sources.json',
   'public/server.pem',
   'src/tls.key',
   '.vercel/project.json',

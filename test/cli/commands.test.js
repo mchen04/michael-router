@@ -1,6 +1,7 @@
 // Account and control commands through the real mrouter binary against dev/server.js processes
-// (fake Upstash, fake providers): login / logout / status, health, keys, models, errors, the URL
-// binding of the stored password, and the exit-code mapping for router refusals and the network.
+// (in-process memory store, fake providers): login / logout / status, health, keys, models,
+// errors, the URL binding of the stored password, and the exit-code mapping for router refusals
+// and the network.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { chmod, lstat, readFile, writeFile } from 'node:fs/promises';

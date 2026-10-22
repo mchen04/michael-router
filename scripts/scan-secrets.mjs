@@ -19,8 +19,10 @@
 //
 // Pattern rules: real-shaped Anthropic keys and OAuth tokens, OpenRouter and Google API keys,
 // complete scrypt$ password hashes (also escaped or URL-encoded), PEM private-key blocks, Upstash
-// REST and Vercel tokens assigned to their variable names, redis:// URL credentials, and absolute
-// home-directory paths (/Users/<name>, /home/<name>).
+// REST and Vercel tokens assigned to their variable names, redis:// and postgres:// URL
+// credentials (postgres: not a `${…}` template placeholder, not on hosts under the reserved .test
+// TLD, which never resolve: test fixtures), and absolute home-directory paths (/Users/<name>,
+// /home/<name>).
 // --literals-stdin: also look for exact values read from stdin (one per line, never argv), in
 // their plain, base64, base64url, URL-encoded and JSON-escaped forms.
 //
@@ -73,6 +75,14 @@ export const RULES = [
   { id: 'vercel-token', re: /(?:VERCEL_(?:OIDC_|ACCESS_)?TOKEN["']?\s*[:=]\s*["']?|--token[= ]["']?)[A-Za-z0-9_.-]{24,}/g },
   // credentials in redis:// and rediss:// URLs (placeholders such as <password> do not match)
   { id: 'redis-url-credentials', re: /\brediss?:\/\/[^\s:@/'"<>]*:[^\s@/'"<>]{8,}@/g },
+  // credentials in postgres:// and postgresql:// URLs, the same shape; not reported: a password
+  // that is a template placeholder (`${password}`), and a host under the reserved .test TLD
+  // (RFC 6761: never resolves), which marks a test fixture
+  {
+    id: 'postgres-url-credentials',
+    re: /\bpostgres(?:ql)?:\/\/[^\s:@/'"<>]*:([^\s@/'"<>]{8,})@([^\s/?#'"<>:]*)/g,
+    accept: (m) => !/^\$\{[^}]*\}$/.test(m[1]) && !/\.test$/i.test(m[2]),
+  },
   // absolute home directories, with or without a trailing slash (`HOME=/Users/<name>`); not inside
   // URLs or longer paths (the lookbehind), not /Users/Shared, not placeholders like /Users/<name>
   {

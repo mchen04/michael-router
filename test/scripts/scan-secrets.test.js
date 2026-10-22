@@ -38,6 +38,9 @@ const PLANTED = {
   homeBare: join('/ho', 'me/planted-', randomBytes(4).toString('hex')),
   oauth: join('sk-ant-', 'oat01-', b64url(70)),
   redis: join('redis', 's://default:', b64url(24), '@db.example.com:6379'),
+  postgres: join('postgres', 'ql://router:', b64url(18), '@db.example.invalid/router?sslmode=require'),
+  // .test exempts only the top-level domain, not a label inside the host
+  postgresTestLabel: join('postgres', '://admin:', b64url(12), '@db.test.example.invalid:5432/app'),
   hash: '', // generated in before()
   literal1: `literal-one-${b64url(18)}`,
   literal2: `literal+two/${b64url(18)}=`,
@@ -195,6 +198,8 @@ test('matches escaped, encoded and bare forms, and flags archives it cannot read
       `hash=${PLANTED.hash.replaceAll('$', '%24')}`,
       `token: ${PLANTED.oauth}`,
       `REDIS_URL=${PLANTED.redis}`,
+      `DATABASE_URL=${PLANTED.postgres}`,
+      `url: "${PLANTED.postgresTestLabel}"`,
     ].join('\n'),
     'escaped.json': `{"a":"${PLANTED.literal2.replaceAll('/', '\\/')}","b":${JSON.stringify(PLANTED.literal4)}}\n`,
     'lower.txt': `cb?token=${pct}\n`,
@@ -214,6 +219,8 @@ test('matches escaped, encoded and bare forms, and flags archives it cannot read
       'worktree:rules.txt:5 scrypt-hash',
       'worktree:rules.txt:6 anthropic-oauth-token',
       'worktree:rules.txt:7 redis-url-credentials',
+      'worktree:rules.txt:8 postgres-url-credentials',
+      'worktree:rules.txt:9 postgres-url-credentials',
       'worktree:escaped.json:1 literal-1-json',
       'worktree:escaped.json:1 literal-2-json',
       'worktree:lower.txt:1 literal-1-urlencoded',
@@ -299,11 +306,15 @@ test('a repository with only fake-shaped fixtures and placeholders is clean', { 
       "const redaction = 'sk-ant-api03-abc and sk-or-v1-deadbeef';",
       "const env = { KV_REST_API_TOKEN: 'store-token-SENTINEL-for-the-fake-upstash' };",
       "const oauth = 'sk-ant-oat01-abc';",
+      "const pooled = 'postgresql://router:db-pw-SENTINEL-fixture@db-pooler.example.test/router?sslmode=require';",
+      "const direct = `postgresql://router:db-pw-SENTINEL-fixture@db.example.test:5432/${name}`;",
+      "const built = `postgresql://${user}:${encodeURIComponent(password)}@db.example.com/${db}`;",
     ].join('\n'),
     'docs.md': [
       'ROUTER_PASSWORD_HASH = `scrypt$<logN>$<r>$<p>$<salt>$<hash>` or "scrypt\\$<logN>\\$..."; KV_REST_API_TOKEN=<token>',
       'paths like /Users/<name>/ or /Users/<name>, HOME=/home/<user>, /Users/Shared and ~/.config/',
       'redis://default:<password>@<host>:6379 or rediss://localhost:6379/0',
+      'postgresql://<user>:<password>@<host>/<database>?sslmode=require or postgres://router:pw@localhost/router',
     ].join('\n'),
   });
   git(repo, ['add', '-A']);

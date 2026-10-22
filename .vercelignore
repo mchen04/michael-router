@@ -15,5 +15,6 @@
 .env*
 *.hash
 key-sources*.json
+database-sources*.json
 *.pem
 *.key

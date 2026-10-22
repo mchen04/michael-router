@@ -106,8 +106,10 @@ mrouter status
 
 ### `health`
 
-Shows the router's status, version, region, instance (start time, cold or warm), store kind and
-latency, which providers are configured, and the round-trip time.
+Shows the router's status, version, region, instance (start time, cold or warm), store kind
+(`postgres` in a deployment, `memory` in local development) and latency, which providers are
+configured, and the round-trip time. `--json` prints the router's answer as is, including the
+store's `schema_version` (`API.md` §1).
 
 ```sh
 mrouter health --json
