@@ -1,0 +1,30 @@
+{
+  "name": "michael-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private, password-protected, OpenAI-compatible gateway for Claude, Gemini and OpenRouter on Vercel.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mchen04/michael-router.git"
+  },
+  "type": "module",
+  "bin": {
+    "mrouter": "cli/mrouter.js"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "node dev/server.js",
+    "check": "node scripts/check.mjs",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:unit": "node --test \"test/unit/**/*.test.js\"",
+    "test:integration": "node --test \"test/integration/**/*.test.js\"",
+    "test:cli": "node --test \"test/cli/**/*.test.js\"",
+    "test:scripts": "node --test \"test/scripts/**/*.test.js\"",
+    "scan": "node scripts/scan-secrets.mjs"
+  },
+  "dependencies": {
+    "@vercel/functions": "^3.10.2"
+  }
+}

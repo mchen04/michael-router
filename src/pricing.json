@@ -1,0 +1,338 @@
+{
+  "updated": "2026-10-21",
+  "units": "USD per 1M tokens",
+  "sources": {
+    "claude": "https://platform.claude.com/docs/en/about-claude/pricing (prices as of 2026-10-06)",
+    "gemini": "https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-10-21)",
+    "openrouter": "provider-reported usage.cost"
+  },
+  "defaults": {
+    "cache_write_multiplier_claude": 1.25,
+    "cache_read_multiplier_claude": 0.1
+  },
+  "smoke_models": {
+    "claude": "claude-haiku-5-5",
+    "gemini": "gemini-2.5-flash-lite",
+    "openrouter": "google/gemini-2.5-flash-lite"
+  },
+  "models": {
+    "claude-fable-5-1": {
+      "provider": "claude",
+      "input": 10,
+      "output": 50,
+      "cache_read": 0.25,
+      "cache_write": 12.5,
+      "assumed": [
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-fable-5": {
+      "provider": "claude",
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-opus-5-5": {
+      "provider": "claude",
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.2,
+      "cache_write": 5,
+      "assumed": [
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-opus-5": {
+      "provider": "claude",
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-opus-4-8": {
+      "provider": "claude",
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-opus-4-7": {
+      "provider": "claude",
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-opus-4-6": {
+      "provider": "claude",
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": true
+    },
+    "claude-sonnet-5-5": {
+      "provider": "claude",
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.2,
+      "cache_write": 2.5,
+      "assumed": [
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-sonnet-5": {
+      "provider": "claude",
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.2,
+      "cache_write": 2.5,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-sonnet-4-6": {
+      "provider": "claude",
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": true
+    },
+    "claude-haiku-5-5": {
+      "provider": "claude",
+      "input": 0.1,
+      "output": 0.5,
+      "cache_read": 0.01,
+      "cache_write": 0.125,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "tiers": [
+        {
+          "above_prompt_tokens": 100000,
+          "input": 0.5,
+          "output": 2.5,
+          "cache_read": 0.05,
+          "cache_write": 0.625,
+          "assumed": [
+            "cache_read",
+            "cache_write"
+          ]
+        }
+      ],
+      "context_length": 1000000,
+      "max_output": 128000,
+      "sampling": false
+    },
+    "claude-haiku-4-5": {
+      "provider": "claude",
+      "input": 1,
+      "output": 5,
+      "cache_read": 0.1,
+      "cache_write": 1.25,
+      "assumed": [
+        "cache_read",
+        "cache_write"
+      ],
+      "context_length": 200000,
+      "max_output": 64000,
+      "sampling": true
+    },
+    "gemini-4-argon": {
+      "provider": "gemini",
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.1,
+      "cache_write": null,
+      "valid_until": "2026-12-01",
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-3.8-flash": {
+      "provider": "gemini",
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075,
+      "cache_write": null,
+      "valid_until": "2027-01-01",
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-3.6-flash": {
+      "provider": "gemini",
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075,
+      "cache_write": null,
+      "valid_until": "2027-01-01",
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-3-flash-preview": {
+      "provider": "gemini",
+      "input": 0.5,
+      "output": 3,
+      "cache_read": 0.05,
+      "cache_write": null,
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-3.5-flash-lite": {
+      "provider": "gemini",
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03,
+      "cache_write": null,
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-3.1-flash-lite": {
+      "provider": "gemini",
+      "input": 0.25,
+      "output": 1.5,
+      "cache_read": 0.025,
+      "cache_write": null,
+      "valid_until": "2027-05-07",
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-3.1-pro-preview": {
+      "provider": "gemini",
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 200000,
+          "input": 4,
+          "output": 18,
+          "cache_read": 0.4,
+          "cache_write": null
+        }
+      ],
+      "context_length": null,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-2.5-pro": {
+      "provider": "gemini",
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 200000,
+          "input": 2.5,
+          "output": 15,
+          "cache_read": 0.25,
+          "cache_write": null
+        }
+      ],
+      "context_length": 1048576,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-2.5-flash": {
+      "provider": "gemini",
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03,
+      "cache_write": null,
+      "context_length": 1048576,
+      "max_output": null,
+      "sampling": true
+    },
+    "gemini-2.5-flash-lite": {
+      "provider": "gemini",
+      "input": 0.1,
+      "output": 0.4,
+      "cache_read": 0.01,
+      "cache_write": null,
+      "context_length": 1048576,
+      "max_output": null,
+      "sampling": true
+    },
+    "openrouter/auto": {
+      "provider": "openrouter",
+      "priced": false,
+      "context_length": null,
+      "max_output": null
+    },
+    "openrouter/free": {
+      "provider": "openrouter",
+      "priced": false,
+      "context_length": null,
+      "max_output": null
+    },
+    "google/gemini-2.5-flash-lite": {
+      "provider": "openrouter",
+      "priced": false,
+      "context_length": null,
+      "max_output": null
+    }
+  }
+}

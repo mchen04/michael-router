@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f5f0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)">
+<meta name="description" content="A private OpenAI-compatible endpoint that routes each request by its model name to the Claude API, the Gemini API or OpenRouter, using provider keys held on the server. Access requires the router password.">
+<title>Michael Router: OpenAI-compatible routing to Claude, Gemini and OpenRouter</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap masthead-grid">
+    <h1>Michael Router</h1>
+    <nav class="toc" aria-label="Sections">
+      <ol>
+        <li><a href="#routing"><span class="toc-no">01</span>Routing</a></li>
+        <li><a href="#quickstart"><span class="toc-no">02</span>Quickstart</a></li>
+        <li><a href="#behavior"><span class="toc-no">03</span>Behavior</a></li>
+        <li><a href="#cli"><span class="toc-no">04</span>CLI</a></li>
+      </ol>
+    </nav>
+    <p class="lede">An <span class="nw">OpenAI-compatible</span> endpoint that routes each request by its model name to the Claude API, the Gemini API or OpenRouter, using provider keys held on the server.</p>
+    <dl class="facts">
+      <div><dt>Endpoint</dt><dd><code class="url"><span data-origin>https://&lt;this host&gt;</span><wbr>/v1</code></dd></div>
+      <div><dt>Protocol</dt><dd>OpenAI Chat Completions, streaming and <span class="nw">non-streaming</span></dd></div>
+      <div><dt>Access</dt><dd>Router password, as <code>Authorization: Bearer</code></dd></div>
+    </dl>
+  </div>
+</header>
+
+<main>
+<section class="section" id="routing" aria-labelledby="routing-h">
+  <div class="wrap section-grid">
+    <div class="section-head">
+      <p class="section-no" aria-hidden="true">01</p>
+      <h2 id="routing-h">Routing</h2>
+    </div>
+    <div class="section-body">
+      <p class="intro">The <code>model</code> field of each request picks the provider. The rules are tried in order and the first match wins.</p>
+      <div class="patchbay">
+        <div class="patchbay-head" aria-hidden="true">
+          <span>Rule</span><span>Model name</span><span></span><span>Provider and upstream</span>
+        </div>
+        <ol class="routes">
+          <li class="route" data-provider="openrouter">
+            <div class="route-in">
+              <p class="pattern"><code><span class="wild">*</span>/<span class="wild">*</span></code></p>
+              <p class="match">contains <code>/</code></p>
+              <ul class="examples" aria-label="Examples">
+                <li><code class="model">openrouter/auto</code></li>
+                <li><code class="model">anthropic/claude-sonnet-4-6</code></li>
+                <li><code class="model">google/gemini-2.5-flash-lite</code></li>
+              </ul>
+            </div>
+            <div class="wire" aria-hidden="true"></div>
+            <div class="route-out">
+              <p class="provider"><span class="vh">routes to </span><code>openrouter</code></p>
+              <p class="provider-name">OpenRouter</p>
+              <p class="mode"><span class="nw">Pass-through</span>: the body is forwarded byte for byte, model name included.</p>
+              <p class="upstream"><code>openrouter.ai<wbr>/api/v1/chat/completions</code></p>
+            </div>
+          </li>
+          <li class="route" data-provider="claude">
+            <div class="route-in">
+              <p class="pattern"><code>claude-<span class="wild">*</span></code></p>
+              <p class="match">starts with <code>claude-</code></p>
+              <ul class="examples" aria-label="Examples">
+                <li><code class="model">claude-sonnet-4-6</code></li>
+                <li><code class="model">claude-haiku-4-5</code></li>
+              </ul>
+            </div>
+            <div class="wire" aria-hidden="true"></div>
+            <div class="route-out">
+              <p class="provider"><span class="vh">routes to </span><code>claude</code></p>
+              <p class="provider-name">Claude API</p>
+              <p class="mode">Translated to the Anthropic Messages API, with automatic prompt caching.</p>
+              <p class="upstream"><code>api.anthropic.com<wbr>/v1/messages</code></p>
+            </div>
+          </li>
+          <li class="route" data-provider="gemini">
+            <div class="route-in">
+              <p class="pattern"><code>gemini-<span class="wild">*</span></code></p>
+              <p class="match">starts with <code>gemini-</code></p>
+              <ul class="examples" aria-label="Examples">
+                <li><code class="model">gemini-2.5-flash</code></li>
+              </ul>
+            </div>
+            <div class="wire" aria-hidden="true"></div>
+            <div class="route-out">
+              <p class="provider"><span class="vh">routes to </span><code>gemini</code></p>
+              <p class="provider-name">Gemini API</p>
+              <p class="mode"><span class="nw">Pass-through</span> to Gemini’s <span class="nw">OpenAI-compatible</span> endpoint.</p>
+              <p class="upstream"><code>generativelanguage.googleapis.com<wbr>/v1beta/openai/chat/completions</code></p>
+            </div>
+          </li>
+          <li class="route route-none" data-provider="none">
+            <div class="route-in">
+              <p class="pattern"><code><span class="wild">*</span></code></p>
+              <p class="match">anything else</p>
+              <ul class="examples" aria-label="Examples">
+                <li><code class="model">gpt-5</code></li>
+              </ul>
+            </div>
+            <div class="wire" aria-hidden="true"></div>
+            <div class="route-out">
+              <p class="provider"><span class="vh">is refused with </span><code>400</code></p>
+              <p class="provider-name">Not routed: <code>model_not_routable</code></p>
+              <p class="mode">The error message lists the three rules.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+      <ul class="notes">
+        <li>Rule&nbsp;1 is tried first, so <code>anthropic/claude-sonnet-4-6</code> goes to OpenRouter, not to the Claude API.</li>
+        <li>Names are not checked against a list: any name the provider accepts works. <code>GET /v1/models</code> lists the models the router has metadata and prices for.</li>
+        <li>Claude requests are translated rather than passed through, so <code>response_format</code> with a JSON schema becomes structured output. A feature with no faithful translation, such as <code>response_format: json_object</code>, is refused with 400&nbsp;<code>unsupported_parameter</code>.</li>
+        <li>A model name is 1&nbsp;to&nbsp;128&nbsp;characters from <code>A-Z a-z 0-9 . _ : / @ + -</code>, starting with a letter or digit; anything else is 400&nbsp;<code>invalid_model</code>. A routed provider without a key answers 503&nbsp;<code>provider_not_configured</code>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="quickstart" aria-labelledby="quickstart-h">
+  <div class="wrap section-grid">
+    <div class="section-head">
+      <p class="section-no" aria-hidden="true">02</p>
+      <h2 id="quickstart-h">Quickstart</h2>
+    </div>
+    <div class="section-body">
+      <p class="intro">Point any client that speaks OpenAI Chat Completions at the base URL and give it the router password as its API key. Keep the password in an environment variable; these examples read <code>MROUTER_PASSWORD</code>.</p>
+      <dl class="spec">
+        <div><dt>Base URL</dt><dd><code class="url url-lg"><span data-origin>https://&lt;this host&gt;</span><wbr>/v1</code></dd></div>
+        <div><dt>API key</dt><dd>The router password, sent as <code>Authorization: Bearer &lt;password&gt;</code>. No other scheme is accepted. Clients never send provider keys.</dd></div>
+        <div><dt>Endpoints</dt><dd>
+          <ul class="endpoints">
+            <li><code>POST /v1/chat/completions</code> <span>Chat Completions, streaming and <span class="nw">non-streaming</span></span></li>
+            <li><code>GET /v1/models</code> <span>Models of the configured providers, with <code>context_length</code> and <code>max_output_tokens</code> when known</span></li>
+          </ul>
+        </dd></div>
+      </dl>
+
+      <figure class="code">
+        <figcaption><span>curl</span><span><code>claude-haiku-4-5</code> → Claude API</span></figcaption>
+<pre tabindex="0"><code>curl \
+  <span data-origin>https://&lt;this host&gt;</span>/v1/chat/completions \
+  -H "Authorization: Bearer $MROUTER_PASSWORD" \
+  -H "content-type: application/json" \
+  -d '{"model": "claude-haiku-4-5",
+       "messages": [{"role": "user", "content": "Hello"}]}'</code></pre>
+      </figure>
+
+      <figure class="code">
+        <figcaption><span>Python, OpenAI SDK</span><span><code>gemini-2.5-flash</code> → Gemini API</span></figcaption>
+<pre tabindex="0"><code>import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="<span data-origin>https://&lt;this host&gt;</span>/v1",
+    api_key=os.environ["MROUTER_PASSWORD"],
+)
+stream = client.chat.completions.create(
+    model="gemini-2.5-flash",
+    messages=[{"role": "user", "content": "Hello"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
+
+<span class="comment"># Claude-specific Messages fields go through extra_body:</span>
+client.chat.completions.create(
+    model="claude-sonnet-4-6",
+    messages=[{"role": "user", "content": "Plan a three-day trip."}],
+    extra_body={"anthropic": {"thinking": {"type": "adaptive"}}},
+)</code></pre>
+      </figure>
+
+      <figure class="code">
+        <figcaption><span>JavaScript, OpenAI SDK</span><span><code>openrouter/auto</code> → OpenRouter</span></figcaption>
+<pre tabindex="0"><code>import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: '<span data-origin>https://&lt;this host&gt;</span>/v1',
+  apiKey: process.env.MROUTER_PASSWORD,
+});
+const res = await client.chat.completions.create({
+  model: 'openrouter/auto',
+  messages: [{ role: 'user', content: 'Hello' }],
+});
+console.log(res.choices[0].message.content, res.usage);</code></pre>
+      </figure>
+
+      <h3 class="subhead">Agent clients</h3>
+      <ul class="notes">
+        <li>For agent clients such as Hermes, add a custom <span class="nw">OpenAI-compatible</span> provider: the base URL above, the router password as the API key, and any routable model name.</li>
+        <li><code>GET /v1/models</code> supplies <code>context_length</code> (and <code>max_output_tokens</code>), which agents use to size their context.</li>
+        <li>A broken provider key is a&nbsp;502, never a&nbsp;401, so it does not trigger credential rotation. Treat a stream that ends without <code>data: [DONE]</code> as failed.</li>
+        <li>Thinking blocks are not sent back to Claude, so a tool loop with <code>anthropic.thinking</code> on can be refused on a later turn. Leave thinking off for tool loops; <code>reasoning_effort</code> alone is fine.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="behavior" aria-labelledby="behavior-h">
+  <div class="wrap section-grid">
+    <div class="section-head">
+      <p class="section-no" aria-hidden="true">03</p>
+      <h2 id="behavior-h">Behavior</h2>
+    </div>
+    <div class="section-body">
+      <ol class="clauses">
+        <li>
+          <h3>Only the body reaches the provider.</h3>
+          <p>The upstream request carries <code>content-type</code>, the provider’s key and the router’s <code>user-agent</code>. Nothing from the client’s headers is forwarded, and provider redirects are never followed. Request bodies are limited to 4&nbsp;MiB, the upstream timeout is 295&nbsp;s including the stream, and a client disconnect aborts the upstream request.</p>
+        </li>
+        <li>
+          <h3>Streaming is relayed as it arrives.</h3>
+          <p>With <code>stream: true</code> the response is <code>text/event-stream</code> and events are passed on as the provider produces them, without buffering. A completed stream ends with <code>data: [DONE]</code>. A stream that fails after its 200&nbsp;status ends with one error event and no <code>[DONE]</code>.</p>
+        </li>
+        <li>
+          <h3>Usage and cost are recorded per model.</h3>
+          <p>After each response, or at the end of a stream, the router records requests, errors and tokens per UTC day, provider and model. Each request’s cost is <code>exact</code> (reported by the provider, as OpenRouter does), <code>estimated</code> (tokens times the router’s dated price table) or <code>unknown</code> (no price for the model, or incomplete or missing usage). Unknown costs are never counted as zero: a total that includes them is marked <code>partial</code> and is a lower bound.</p>
+        </li>
+        <li>
+          <h3>Provider errors stay errors.</h3>
+          <p>A failure is never answered with a&nbsp;2xx. It comes in the OpenAI error envelope, typed <code>gateway_error</code> when the router refused the request and <code>upstream_error</code> when the provider failed; upstream errors name the <code>provider</code> and, when it answered, its <code>upstream_status</code>. An OpenRouter&nbsp;200 whose body is an error becomes an error response.</p>
+        </li>
+        <li>
+          <h3>A provider key failure is&nbsp;502, not&nbsp;401.</h3>
+          <p>When a provider rejects the router’s key, the answer is 502&nbsp;<code>provider_auth_failed</code>. A&nbsp;401 always means the router password, so clients that rotate credentials on a&nbsp;401 are not misled.</p>
+        </li>
+        <li>
+          <h3>Wrong passwords slow down, then block.</h3>
+          <p>From the second wrong password in an hour, the source must wait before its next attempt: 250&nbsp;ms, doubling with each failure up to 30&nbsp;s. The eighth blocks the source for one&nbsp;hour, even for the right password, and each repeated block doubles, up to 24&nbsp;hours. A source is one IPv4 address or one IPv6&nbsp;/64. The counters live in the shared store, so the limits hold across all instances; when the store is unavailable, requests are refused with&nbsp;503, not let through. These are the defaults.</p>
+        </li>
+        <li>
+          <h3>Prompts, keys and the password are never logged.</h3>
+          <p>Request bodies, prompts, completions, request headers, the router password and provider keys are never written to logs, events or the store. Each request leaves one log line of allowlisted fields: request id, route, method, status, provider, model, timings, error code and a <span class="nw">cold-start</span> flag. Error messages are scrubbed of anything <span class="nw">key-like</span>.</p>
+        </li>
+        <li>
+          <h3>Provider keys are encrypted at rest.</h3>
+          <p>A key set with <code>mrouter keys set</code> is checked with the provider first (no tokens are spent) unless <code>--no-verify</code> is given, and is stored only as <span class="nw">AES-256-GCM</span> ciphertext under a key derived from the server secret. It overrides the key in the deployment’s environment. No route returns a key, a prefix or a fingerprint.</p>
+        </li>
+        <li>
+          <h3>Claude requests get prompt caching automatically.</h3>
+          <p>The router adds <code class="wrap">cache_control: {"type": "ephemeral"}</code> to each Claude request, so the longest reusable prefix is cached. Send the header <code>x-router-cache: off</code> to turn it off for one request, or replace it with <code>anthropic.cache_control</code>. Prompts shorter than the model’s minimum cacheable length are simply not cached.</p>
+        </li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="cli" aria-labelledby="cli-h">
+  <div class="wrap section-grid">
+    <div class="section-head">
+      <p class="section-no" aria-hidden="true">04</p>
+      <h2 id="cli-h">CLI</h2>
+    </div>
+    <div class="section-body">
+      <p class="intro"><code>mrouter</code> is the <span class="nw">command-line</span> client. It logs in, manages the provider keys stored on the router, sends prompts, runs smoke tests, and shows usage, cost and recent errors. It needs Node.js&nbsp;24 and nothing else.</p>
+      <figure class="code listing">
+        <figcaption><code>mrouter [global flags] &lt;command&gt; [flags] [arguments]</code></figcaption>
+        <dl class="commands">
+          <div><dt><code>login</code></dt><dd>Check the router password against the server and store it</dd></div>
+          <div><dt><code>logout</code></dt><dd>Delete the stored password</dd></div>
+          <div><dt><code>status</code></dt><dd>Show the URL, whether a password is stored, and the config paths</dd></div>
+          <div><dt><code>health</code></dt><dd>Server health: version, instance, store latency, providers</dd></div>
+          <div><dt><code>keys list</code></dt><dd>Provider, configured, source (store/env/none), last update</dd></div>
+          <div><dt><code>keys set &lt;provider&gt;</code></dt><dd>Store a provider key on the router and verify it</dd></div>
+          <div><dt><code>keys unset &lt;provider&gt;</code></dt><dd>Remove a stored key (the environment key applies again)</dd></div>
+          <div><dt><code>models</code></dt><dd>Models the router has metadata and prices for</dd></div>
+          <div><dt><code>ask [PROMPT...]</code></dt><dd>Send a prompt; stream the reply, then a usage and cost footer</dd></div>
+          <div><dt><code>test [provider...]</code></dt><dd>One <span class="nw">non-streaming</span> and one streaming request per provider</dd></div>
+          <div><dt><code>usage</code></dt><dd>Usage and cost per provider and model</dd></div>
+          <div><dt><code>errors</code></dt><dd>Recent error and authentication events, newest first</dd></div>
+          <div><dt><code>hash-password</code></dt><dd>Print a ROUTER_PASSWORD_HASH value for a new password</dd></div>
+          <div><dt><code>help [command]</code></dt><dd>Show help for a command</dd></div>
+        </dl>
+      </figure>
+      <dl class="spec">
+        <div><dt>Install</dt><dd><code>npm install -g .</code> from a checkout of <code>github.com/mchen04/michael-router</code></dd></div>
+        <div><dt>Global flags</dt><dd><code>--url URL</code>, <code>--json</code>, <code>--timeout S</code>, <code>--no-color</code>, <code>-h</code>/<code>--help</code>, <code>--version</code></dd></div>
+        <div><dt>Environment</dt><dd><code>MROUTER_URL</code> sets the router URL (<code>--url</code> takes precedence); <code>MROUTER_PASSWORD</code> overrides the stored password</dd></div>
+        <div><dt>Exit codes</dt><dd>0&nbsp;ok, 1&nbsp;error, 2&nbsp;usage, 3&nbsp;router auth or limit, 4&nbsp;upstream or provider error, 5&nbsp;network</dd></div>
+        <div><dt>Secrets</dt><dd>The router password and provider keys are read from a hidden prompt or stdin, never from arguments.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <p><strong>Michael Router is a private service.</strong> There is no <span class="nw">sign-up</span> and no web login. Access is by password, through the API.</p>
+    <p class="footer-note">This page is static. It sets no cookies and loads nothing from other sites.</p>
+  </div>
+</footer>
+</body>
+</html>
