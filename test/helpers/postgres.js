@@ -3,13 +3,16 @@
 // os.tmpdir() with trust auth for the superuser over the socket and scram-sha-256 for every other
 // role; the server listens on a unix socket only (no TCP), with fsync, full-page writes and
 // synchronous commit off. The socket goes in the same directory when its path fits in a unix
-// socket address, else in a second private mkdtemp directory under /tmp (a long TMPDIR); both are
-// named mr-pg-*. A small sh guard owns the server: when stop() is called, or this process exits
-// and its end of the guard's stdin closes, the guard stops postgres and deletes both directories,
-// so no cluster outlives its test file.
+// socket address. Under a long TMPDIR it does not; then MR_TEST_SOCKET_ROOT, a test-only setting
+// read only here, must name a short directory the tester owns (absolute, existing, not resolving
+// under /tmp, /private/tmp or /var/tmp), and the socket gets a second private mkdtemp directory
+// there. Without it the helper throws: there is no fallback, and nothing goes to /tmp unless
+// TMPDIR points there. Both directories are named mr-pg-*. A small sh guard owns the server: when
+// stop() is called, or this process exits and its end of the guard's stdin closes, the guard stops
+// postgres and deletes both directories, so no cluster outlives its test file.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { access, constants, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, constants, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
@@ -24,21 +27,57 @@ const PORT = 5432;
 // A unix socket path must fit in sockaddr_un.sun_path, which counts the terminating NUL: 104 bytes
 // on macOS, 108 on Linux. The smaller limit applies everywhere, so a path that fits here fits on both.
 const SOCKET_PATH_BYTES = 104;
-/** Where a socket directory goes when the one under os.tmpdir() would be too long. */
-const SHORT_ROOT = '/tmp';
+/** System temp roots a socket root may not resolve under (on macOS /tmp and /var/tmp live in /private). */
+const SYSTEM_TEMP_ROOTS = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
 
-/** Whether the socket file in `dir` fits in a unix socket address. @param {string} dir */
-const socketFits = (dir) => Buffer.byteLength(path.join(dir, `.s.PGSQL.${PORT}`)) < SOCKET_PATH_BYTES;
+/** Whether the socket file in `dir` fits in a unix socket address. @param {string} dir @param {number} [limit] */
+const socketFits = (dir, limit = SOCKET_PATH_BYTES) => Buffer.byteLength(path.join(dir, `.s.PGSQL.${PORT}`)) < limit;
+/** The longest socket directory mkdtemp can make under `root` (it appends six characters to the prefix). @param {string} root */
+const socketDirIn = (root) => path.join(root, `${PREFIX}XXXXXX`);
+/** @param {string} p */
+const systemTempRoot = (p) => SYSTEM_TEMP_ROOTS.find((r) => p === r || p.startsWith(`${r}/`));
 
-/** A new private (0700) mr-pg- directory under the first of os.tmpdir() and /tmp in which the socket fits. */
-async function makeSocketDir() {
-  const roots = [tmpdir(), SHORT_ROOT];
-  // mkdtemp appends six characters to the prefix.
-  const root = roots.find((r) => socketFits(path.join(r, `${PREFIX}XXXXXX`)));
-  if (root === undefined) {
-    throw new Error(`no directory for the PostgreSQL socket: <dir>/.s.PGSQL.${PORT} must be shorter than ${SOCKET_PATH_BYTES} bytes (unix socket path limit, with the NUL) under ${roots.join(' or ')}`);
+/**
+ * The directory under which a socket directory goes; reads the filesystem, creates nothing.
+ * `tmpdir` when a socket directory under it fits (for a cluster, the socket then stays in the
+ * cluster directory); else `socketRoot` (MR_TEST_SOCKET_ROOT), resolved with realpath, which must
+ * be an absolute path to an existing directory that is not under a system temp root and in which
+ * a socket directory fits. Throws otherwise; there is no other fallback.
+ * @param {{tmpdir: string, socketRoot?: string, limit?: number}} options `limit` is for tests only.
+ * @returns {Promise<string>}
+ */
+export async function socketRootFor({ tmpdir, socketRoot, limit = SOCKET_PATH_BYTES }) {
+  if (socketFits(socketDirIn(tmpdir), limit)) return tmpdir;
+  const over = `the PostgreSQL socket path under TMPDIR (${path.join(socketDirIn(tmpdir), `.s.PGSQL.${PORT}`)}) is over the unix socket path limit of ${limit} bytes with the NUL`;
+  const own = `a short directory you own (an absolute path to an existing directory, not under ${SYSTEM_TEMP_ROOTS.join(', ')})`;
+  if (!socketRoot) throw new Error(`${over}. Set MR_TEST_SOCKET_ROOT to ${own}.`);
+  /** @param {string} why @param {ErrorOptions} [options] */
+  const refused = (why, options) => new Error(`${over}, and MR_TEST_SOCKET_ROOT (${socketRoot}) ${why}. Set it to ${own}.`, options);
+  if (!path.isAbsolute(socketRoot)) throw refused('is not an absolute path');
+  const inTemp = systemTempRoot(path.normalize(socketRoot));
+  if (inTemp) throw refused(`is under ${inTemp}`);
+  let real;
+  try {
+    real = await realpath(socketRoot);
+  } catch (err) {
+    throw refused('does not exist', { cause: err });
   }
-  return mkdtemp(path.join(root, PREFIX));
+  if (!(await stat(real)).isDirectory()) throw refused('is not a directory');
+  const realInTemp = systemTempRoot(real);
+  if (realInTemp) throw refused(`resolves under ${realInTemp}`);
+  if (!socketFits(socketDirIn(real), limit)) throw refused(`is too long as well (it resolves to ${real})`);
+  return real;
+}
+
+/** A new private (0700) mr-pg- directory in which the socket fits: under os.tmpdir(), else MR_TEST_SOCKET_ROOT. */
+async function makeSocketDir() {
+  const root = await socketRootFor({ tmpdir: tmpdir(), socketRoot: process.env.MR_TEST_SOCKET_ROOT });
+  const dir = await mkdtemp(path.join(root, PREFIX)); // mkdtemp makes it 0700
+  if (!socketFits(dir)) {
+    await rm(dir, { recursive: true, force: true });
+    throw new Error(`the PostgreSQL socket path in ${dir} is over the unix socket path limit of ${SOCKET_PATH_BYTES} bytes with the NUL`);
+  }
+  return dir;
 }
 
 /**

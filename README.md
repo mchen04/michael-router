@@ -50,9 +50,11 @@ npm run scan               # secret scan of the working tree and the git history
 The store tests start their own PostgreSQL server per test file on a unix socket and delete it
 afterwards. They need the PostgreSQL server binaries (`initdb`, `postgres`) on `PATH`, or
 `PG_BIN` set to the directory that holds them. The cluster lives in a private `mr-pg-*`
-directory under the system temp directory (`TMPDIR`); when the socket path there would exceed
-the unix socket limit (a long `TMPDIR`), the socket gets its own private `mr-pg-*` directory
-under `/tmp`.
+directory under the system temp directory (`TMPDIR`), and so does its socket. A long `TMPDIR`
+puts the socket path over the unix socket limit (104 bytes); then set `MR_TEST_SOCKET_ROOT` to
+a short directory you own (an absolute path, not under `/tmp`, `/private/tmp` or `/var/tmp`),
+and the socket gets its own private `mr-pg-*` directory there. Without it those tests fail with
+an error that says so. There is no fallback: nothing goes to `/tmp` unless `TMPDIR` points there.
 
 `tools/render-landing.mjs` renders the landing page in `public/` with headless Chromium at
 phone, tablet and desktop sizes in light and dark mode. It writes screenshots and a
