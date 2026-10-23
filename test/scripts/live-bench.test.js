@@ -8,6 +8,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { containsPassword } from '../../scripts/live-smoke.mjs';
+import { SMOKE_MODELS } from '../../src/pricing.js';
 import { SECRET_MARKER, startRouterStack } from '../helpers/cli.js';
 import { PASSWORD } from '../helpers/fixtures.js';
 
@@ -72,6 +73,8 @@ test('records client total, server-timing and the cold flag per request; overhea
       ],
       'the first request is the cold one; health and chat requests interleave',
     );
+    const geminiModels = stack.fake.requests.filter((q) => q.provider === 'gemini' && q.method === 'POST').map((q) => q.body?.model);
+    assert.deepEqual(geminiModels, [SMOKE_MODELS.gemini, SMOKE_MODELS.gemini], 'the Gemini requests send the Gemini smoke model');
     for (const q of ev.requests) {
       assert.equal(q.result, 'ok');
       assert.ok(q.total_ms >= q.ttfb_ms && typeof q.server_timing.gw === 'number' && typeof q.server_timing.store === 'number');

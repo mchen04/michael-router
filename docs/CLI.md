@@ -167,8 +167,9 @@ mrouter models
 The prompt is the arguments joined with spaces. When stdin is not a terminal, it is read to its
 end and appended after a blank line, or is the whole prompt when there are no arguments. A
 program that leaves stdin open without writing to it makes `ask` wait, so run `ask` from such a
-program with `</dev/null`. The default model is the Claude smoke model (`smoke_models.claude` in
-`src/pricing.json`).
+program with `</dev/null`. The default model is the Gemini smoke model (`smoke_models.gemini` in
+`src/pricing.json`, `gemini-3.5-flash-lite`). Any other model, Claude included, is chosen with
+`-m`.
 
 - The reply streams to stdout as it arrives.
 - A footer goes to stderr: provider, model, tokens (prompt, cached, completion), cost and
