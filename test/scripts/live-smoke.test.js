@@ -8,6 +8,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { containsPassword } from '../../scripts/live-smoke.mjs';
+import { SMOKE_MODELS } from '../../src/pricing.js';
 import { PASSWORD, ROUTER_SECRET, passwordHash } from '../helpers/fixtures.js';
 import { SECRET_MARKER, startRouterStack } from '../helpers/cli.js';
 import { emptySocketDir } from '../helpers/postgres.js';
@@ -79,6 +80,8 @@ test('records every check with only the allowed fields, labelled as mocked, and 
       ev.calls.map((/** @type {any} */ c) => `${c.provider} ${c.mode}`),
       ['claude non-stream', 'claude stream', 'claude tool-call', 'gemini non-stream', 'gemini stream', 'openrouter non-stream', 'openrouter stream'],
     );
+    const geminiModels = stack.fake.requests.filter((q) => q.provider === 'gemini' && q.method === 'POST').map((q) => q.body?.model);
+    assert.deepEqual([...new Set(geminiModels)], [SMOKE_MODELS.gemini], 'the Gemini checks send the Gemini smoke model');
     for (const c of ev.calls) {
       assert.deepEqual(Object.keys(c).sort(), CALL_FIELDS);
       assert.equal(c.http_status, 200);

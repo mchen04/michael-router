@@ -281,7 +281,7 @@ test('test: one non-streaming and one streaming check per configured provider, w
   assert.equal(rows.pop()?.join(' '), 'All 6 checks passed.');
   const expected = [
     ['claude', 'claude-haiku-5-5', '2,500/50/2,000', '$0.000105 estimated'],
-    ['gemini', 'gemini-2.5-flash-lite', '1,200/300/200', '$0.000222 estimated'],
+    ['gemini', 'gemini-3.5-flash-lite', '1,200/300/200', '$0.001056 estimated'],
     ['openrouter', 'google/gemini-2.5-flash-lite', '1,000/200/100', '$0.001230 exact'],
   ];
   assert.equal(rows.length, 6);
@@ -297,6 +297,7 @@ test('test: one non-streaming and one streaming check per configured provider, w
     assert.ok(JSON.stringify(q.body.messages).includes(SMOKE_PROMPT));
   }
   assert.deepEqual(sent.map((q) => Boolean(q.body.stream)), [false, true, false, true, false, true]);
+  assert.deepEqual(sent.map((q) => q.body.model), expected.flatMap(([, model]) => [model, model]), 'each check sends its smoke model');
 });
 
 test('test: a provider with a rejected key fails its rows; exit 4 and the failures listed', async () => {

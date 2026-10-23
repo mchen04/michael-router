@@ -33,6 +33,17 @@ test('estimated cost: uncached prompt = prompt - cached - cache writes, each pri
   assert.deepEqual(costOf('gemini', 'gemini-2.5-flash-lite', usage({}), NOW), { status: 'estimated', nusd: 0 });
 });
 
+test('Gemini smoke model: gemini-3.5-flash-lite at the official Standard rates; gemini-2.5-flash-lite still priced', () => {
+  // gemini-2.5-flash-lite answers 404 to new accounts. Rates: official Gemini API pricing page,
+  // 2026-10-22, Standard paid tier: input 0.30, output (incl. thinking) 2.50, caching 0.03 USD / 1M.
+  assert.equal(SMOKE_MODELS.gemini, 'gemini-3.5-flash-lite');
+  const e = PRICING.models[SMOKE_MODELS.gemini];
+  assert.deepEqual([e.provider, e.input, e.output, e.cache_read, e.tiers], ['gemini', 0.3, 2.5, 0.03, undefined]);
+  const u = usage({ prompt_tokens: 1200, cached_tokens: 200, completion_tokens: 300 });
+  assert.deepEqual(costOf('gemini', SMOKE_MODELS.gemini, u, NOW), { status: 'estimated', nusd: 1000 * 300 + 200 * 30 + 300 * 2500 });
+  assert.ok(priceEntry('gemini', 'gemini-2.5-flash-lite', NOW), 'existing accounts and recorded usage still price it');
+});
+
 test('prompt-size tiers apply strictly above the threshold, to every token of the request', () => {
   const at = usage({ prompt_tokens: 200000, completion_tokens: 1000 });
   const above = usage({ prompt_tokens: 200001, completion_tokens: 1000 });
