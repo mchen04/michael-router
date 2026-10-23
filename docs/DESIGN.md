@@ -27,7 +27,8 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
 ## 2. Stack
 
 - Plain Vercel project, no framework. Node.js runtime (24.x), ESM JavaScript (`"type": "module"`),
-  JSDoc types, zero runtime dependencies except `@vercel/functions` (for `waitUntil`).
+  JSDoc types, two runtime dependencies: `@vercel/functions` (`waitUntil`, `attachDatabasePool`)
+  and `pg` (node-postgres).
 - One function, `api/router.js`, receives every API path via `vercel.json` rewrites, so all
   traffic shares one warm instance pool. Whether Vercel shows the function the original or the
   rewritten URL is not documented, so the rewrite carries the route explicitly:
@@ -35,13 +36,78 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
   `/api/router?__route=control/:path*`. The handler uses `__route` when the pathname is
   `/api/router`, else the pathname (dev server). `supportsCancellation: true`, `maxDuration: 300`.
   Static landing page lives in `public/` (`"framework": null`, `outputDirectory: "public"`).
-- Durable store: Redis over the Upstash REST protocol (Vercel Marketplace "Upstash for Redis",
-  free plan). Accepts `KV_REST_API_URL`/`KV_REST_API_TOKEN` or
-  `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`. Tests use an in-repo fake Upstash REST
-  server (mocked evidence, labelled as such).
+- Function region: `"regions": ["cle1"]` in `vercel.json`, next to the database (AWS us-east-2):
+  every protected request makes at least one store round trip before it is answered
+  (`DEPLOY.md` step 5.1).
+- Durable store: PostgreSQL (Neon in production, through its pooled endpoint) over the wire
+  protocol with `pg`, behind the domain interface in `src/store/contract.js`
+  (`src/store/postgres.js`; `src/store/memory.js` implements the same interface for
+  `ROUTER_STORE=memory` and in-process tests). Every router table lives in schema
+  `michael_router`; nothing outside it is read for router state or changed.
+  - Pool: `max` 5, idle clients closed after 10 s, `connectionTimeoutMillis` 5000 (covers a cold
+    compute wake and waiting for a pool client), `application_name=michael-router`. On Vercel the
+    pool is handed to `attachDatabasePool`: after each client release it keeps the instance alive
+    for the pool's idle timeout plus about 100 ms (never past the function's deadline), so pg-pool
+    closes the idle clients itself before the instance suspends.
+  - Statements: parameterized, every table written `michael_router.<table>` (no dependence on
+    `search_path`), one autocommitted statement per method (events: insert, then trim). No `SET`,
+    interactive transactions or session advisory locks, so they work through PgBouncer in
+    transaction mode; no `statement_timeout` or `options` startup parameters.
+  - Atomicity: an `auth_sources` statement locks only the source's row (`INSERT … ON CONFLICT DO
+    UPDATE`, or `SELECT … FOR UPDATE` in a release), so concurrent requests on one source
+    serialize on that row and every count is exact across instances. A usage upsert locks one row
+    per counter it adds to and may wait on each, but every writer locks its rows in the same byte
+    order (`ORDER BY … COLLATE "C"`), so no two writers can wait on each other in a cycle. The
+    sweeps and trims take their locks with `SKIP LOCKED` and never wait. So no statement can
+    deadlock.
+  - Sweep: each wrong-password statement also deletes up to 100 dead `auth_sources` rows of other
+    sources (every end time passed), oldest first, skipping locked rows; a release deletes its own
+    row once nothing in it is active. The table stays bounded by the sources seen recently.
+  - Timeouts (fail closed): acquiring a client is bounded by 5000 ms, then each method's
+    statements by 1500 ms on the client side. A late call rejects and its client is destroyed
+    (`release(true)`), never reused. `failClosed` adds an outer 7000 ms timer. A late statement
+    may still finish on the server; a precheck slot it took expires with its 60 s end time.
+  - TLS: `sslmode` `require`, `verify-ca` or `verify-full` connects with
+    `ssl: {rejectUnauthorized: true}` (verify-full semantics with the system CAs; the URL's
+    `sslmode` and `channel_binding` are removed before pg sees it, so pg's sslmode handling and
+    its warning never apply). pg's `enableChannelBinding` is on whenever TLS is, unless the URL
+    sets `channel_binding=disable`: with `require`, with `prefer` and with no `channel_binding` at
+    all (SCRAM-SHA-256-PLUS with tls-server-end-point when the server offers it). pg 8.23 does not
+    refuse a server that offers no binding, so certificate and host verification is what binds the
+    connection to the server. `channel_binding=require` without TLS is refused. Production refuses
+    a URL whose `sslmode` is missing, `disable`, `allow` or `prefer`, and a URL that leaves out the
+    host (its host name or a `host=` parameter), the user or the password: pg would fill each in
+    from `PGHOST`, `PGUSER` or `PGPASSWORD` (or a password file). Outside production, TLS may be
+    off only for a loopback host or a unix-socket `host=` directory (tests), and the user and
+    password may be left out.
+  - Errors: every pg failure becomes a generic `StoreError` (never the URL, host, user, password,
+    SQL or parameters), keeping only a 5-character SQLSTATE as a property. `bigint` values arrive
+    as text and are converted with `Number`; an unsafe integer is a malformed row.
+  - Schema (`src/store/migrations.js`, frozen and append-only): `schema_migrations (version,
+    name, checksum, applied_at)`; `auth_sources` (one row per source: failure count and window
+    end, wait end, block end, strikes and their end, inflight and its end, `expires_ms` = the
+    latest end, indexed for the sweep; end times are epoch ms from the router's clock);
+    `provider_keys (provider, record, updated_at)`; `usage_daily (day, provider, model, metric,
+    value bigint)`; `events (id identity, event json)` (`json` keeps the stored text exactly).
+  - Migrations (`src/store/migrate.js`) run only from the operator's migrate command
+    (`scripts/migrate.mjs`, §10.2), never at request time, and `src/store/migrate.js` is not
+    uploaded with the deployment; `ping` (health) fails closed when the schema is missing or older than the code
+    needs. Planning runs in a `BEGIN READ ONLY` transaction. Applying runs each pending migration
+    in its own transaction: `SET LOCAL` lock and statement timeouts, `pg_advisory_xact_lock` on
+    a fixed key (works through a pooler), re-read the applied versions under the lock, run the
+    SQL, record `{version, name, sha256 checksum}`, commit. Every statement is additive and
+    confined to `michael_router` (checked statically by the tests). Refused, changing nothing:
+    the schema holds objects but no `schema_migrations`; the database records a version the code
+    does not know (it is newer); a recorded checksum differs from the code's.
 - Local adapter `dev/server.js` wraps the same handler with `node:http` so tests and benchmarks
   run the exact code Vercel runs.
-- Tests: `node:test`, all offline against local fakes. Real providers only for final smoke.
+- Tests: `node:test`, all offline against local fakes and a task-local PostgreSQL that
+  `test/helpers/postgres.js` starts per test file (binaries from `PG_BIN`, else `PATH`; unix
+  socket only, in the cluster's `mr-pg-*` directory under the system temp directory; a long
+  `TMPDIR` that puts the socket path over the unix socket limit needs `MR_TEST_SOCKET_ROOT`, a
+  short directory the tester owns, for a private `mr-pg-*` socket directory, else the helper
+  throws; nothing goes to `/tmp` unless `TMPDIR` points there; stopped and deleted afterwards).
+  Real providers only for final smoke.
 
 ## 3. Repository layout and ownership
 
@@ -54,8 +120,12 @@ src/version.js           version (package.json) and short commit (VERCEL_GIT_COM
 src/source.js            client source id (trusted IP header on Vercel; IPv6 -> /64)
 src/auth.js              password hash verify (scrypt) + per-instance verified cache
 src/limiter.js           wrong-password slowdown / block, shared via the store
-src/store/upstash.js     Upstash REST client: command, pipeline, multi-exec
-src/store/memory.js      in-process store with the same raw-command interface
+src/store/contract.js    store interface: method list, limiter lifetimes, input checks, StoreError
+src/store/postgres.js    PostgreSQL store (pg pool, one statement per method)
+src/store/memory.js      in-process store with the same interface and semantics
+src/store/database-url.js  database URL checks and the TLS options passed to pg (no pg import)
+src/store/migrations.js  frozen, append-only schema migrations
+src/store/migrate.js     migration plan and apply (operator command and tests; not uploaded)
 src/store/index.js       factory; fail closed in production when unconfigured
 src/keys.js              provider key resolution (store override > env), AES-256-GCM
 src/routing.js           model name -> provider
@@ -72,17 +142,20 @@ src/control.js           /control/* routes
 cli/mrouter.js           CLI entry (package.json "bin": {"mrouter": ...})
 cli/lib/*.js             CLI internals
 scripts/check.mjs                 `npm run check`: node --check every script, parse the JSON configs
-scripts/copy-keys-to-vercel.mjs   deterministic secret transfer (§10)
-scripts/key-sources.example.json  manifest example (real manifest is gitignored)
+scripts/copy-keys-to-vercel.mjs   deterministic secret transfer (§10.1)
+scripts/key-sources.example.json  key manifest example (real manifest is gitignored)
+scripts/database-sources.example.json  database URL manifest example (real manifest is gitignored)
+scripts/migrate.mjs               migration plan and apply, URL from stdin (§10.2)
+scripts/lib/env-document.mjs      strict dotenv parser and bounded stdin reader for the scripts
 scripts/scan-secrets.mjs          tree + full-history secret scan, never prints matches (§13)
 scripts/live-smoke.mjs            post-deploy smoke run against a deployment (DEPLOY.md step 6)
 tools/render-landing.mjs          headless render + layout checks of public/ (needs playwright-core)
 dev/server.js            local node:http adapter + static file server
-dev/fake-upstash.js      fake Upstash REST server (memory store behind it)
 dev/fake-providers.js    fake claude/gemini/openrouter compat servers with scenarios
 bench/                   gateway-overhead and cold-start benchmarks (§12)
 test/{unit,integration,cli,scripts}/   node:test suites
-test/helpers/            shared fixtures, request harness, process and fake-tool helpers
+test/helpers/            shared fixtures, request harness, process and fake-tool helpers,
+                         task-local PostgreSQL (postgres.js)
 README.md docs/API.md docs/CLI.md docs/SECURITY.md docs/DEPLOY.md docs/BENCHMARKS.md
 public/                  landing page (static, no JS required)
 .vercelignore            deployment upload allowlist (DEPLOY.md step 5)
@@ -98,8 +171,8 @@ gitignored `evidence/` directory or outside the repository; only summaries are c
 |------|----------|---------|
 | `ROUTER_PASSWORD_HASH` or `ROUTER_PASSWORD` | exactly one | The access password exists only as a Vercel sensitive environment variable — never in repository files, history, logs or command arguments. Preferred: `ROUTER_PASSWORD_HASH` = `scrypt$<logN>$<r>$<p>$<salt b64url>$<hash b64url>`, produced from stdin by `mrouter hash-password` or the copy script's `scrypt-hash` transform. Accepted: `ROUTER_PASSWORD` (the password itself, ≥ 12 characters), compared as HMAC digests with `timingSafeEqual`. Both set → 503 `server_misconfigured`. |
 | `ROUTER_SECRET` | yes | ≥32 random bytes, base64/base64url. HKDF-SHA256 derives the key-encryption key (`info="provider-keys-v1"`) and the source-id HMAC key (`info="source-id-v1"`). Never rotated by tooling (rotation orphans stored keys). |
-| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in Redis overrides the env key. |
-| `KV_REST_API_URL`+`KV_REST_API_TOKEN` or `UPSTASH_REDIS_REST_URL`+`UPSTASH_REDIS_REST_TOKEN` | yes in production | Store. |
+| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
+| `DATABASE_URL_POOLED` (preferred) or `DATABASE_URL` | yes, unless `ROUTER_STORE=memory` | PostgreSQL URL of the store (Neon: the `-pooler` endpoint for `DATABASE_URL_POOLED`). In production the URL must name its host, user and password, and `sslmode` must be `require`, `verify-ca` or `verify-full`; `channel_binding` may be `require`, `prefer` or `disable`; any other `ssl*` parameter or `uselibpqcompat` is refused (pg would let it override the TLS settings). A refused URL is reported as its variable's name; neither set → `DATABASE_URL_POOLED/DATABASE_URL`. Both values and the passwords in them are scrubbed from every output (§8). |
 | `ROUTER_STORE=memory` | dev/test only | Refused when `VERCEL` is set or `NODE_ENV=production`. |
 | `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` | no | Upstream origin overrides (tests/bench). |
 | `TRUST_PROXY_HEADERS` | no | Take the client IP from `x-vercel-forwarded-for`, then `x-real-ip` (Vercel overwrites both; client-supplied values are not forwarded). Implied true when `VERCEL=1`; tests set it to simulate many sources. Otherwise the socket address is used. |
@@ -118,7 +191,7 @@ supported clients).
 |---------------|---------|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming and non-streaming |
 | `GET /v1/models` | OpenAI model list: known models of configured providers from the price table, each with `owned_by` = provider and, when known, `context_length` and `max_output_tokens` (Hermes reads context length from here) |
-| `GET /control/health` | version, commit, region, instance age/cold flag, store latency, provider configured flags |
+| `GET /control/health` | version, commit, region, instance age/cold flag, store kind, latency and schema version, provider configured flags |
 | `GET /control/keys` | `[{provider, configured, source: "store"\|"env"\|"none", updated_at}]` — never values or fingerprints |
 | `PUT /control/keys/:provider` | body `{"key": "...", "verify": true}`; stores encrypted override; optional verification against the provider's model-list endpoint (no token spend), done before storing: rejected → 400 `key_rejected`, unverifiable → 502 `key_verification_unavailable`, nothing stored |
 | `DELETE /control/keys/:provider` | remove override (falls back to env) |
@@ -142,33 +215,44 @@ Source id `S` = HMAC(source-key, normalized IP) truncated to 16 bytes hex. IPv4 
 address; IPv6 uses its /64 prefix. Unknown IP → the shared `unknown` bucket. The display form
 (IPv4 address or `prefix::/64`) is recorded only in auth events.
 
-Keys (`mr:v1:` prefix): `auth:block:S` (EX), `auth:wait:S` (PX), `auth:fail:S` (counter, EX
-window set NX), `auth:inflight:S` (counter, EX 60), `auth:strikes:S` (counter, EX 7 days).
+State: one `michael_router.auth_sources` row per source (§2) with the failure count and its
+window end, the wait end, the block end, the strike count and its end (7 days), and the inflight
+count and its end (60 s). End times come from the router's clock; a field counts only while its
+end time is later than now, so each one expires on its own. The policy below lives in
+`src/limiter.js`; the store implements each step as one atomic statement.
 
 Order on every protected request that presents a credential (no credential → 401
 `missing_credentials`, no store call, not counted):
 
-1. **Precheck** — one pipeline: `GET block`, `PTTL wait`, `GET fail`, `INCR inflight`,
-   `EXPIRE inflight 60`, plus `HGETALL mr:v1:keys` (provider key overrides; same round trip).
+1. **Precheck** (`authPrecheck`, one statement and round trip): take an inflight slot (the count
+   restarts at 1 when its end time has passed; the end becomes now + 60 s) and return the active
+   block end, wait end and failure count, the new inflight count, and every provider key record.
    - blocked → 429 `source_blocked`, `Retry-After` = remaining seconds.
-   - wait > 0 → 429 `auth_backoff`, `Retry-After` = ceil(wait).
-   - fail ≥ `AUTH_MAX_FAILURES` → 429 `source_blocked`.
+   - waiting → 429 `auth_backoff`, `Retry-After` = remaining seconds, rounded up.
+   - failures ≥ `AUTH_MAX_FAILURES` → 429 `source_blocked`, `Retry-After` = `AUTH_WINDOW_SECONDS`.
    - inflight > `AUTH_MAX_INFLIGHT` → 429 `auth_busy`, `Retry-After: 1`.
-   - Every rejection releases its inflight slot (`DECR`, via `waitUntil`) and evaluates no password.
+   - Every rejection releases its inflight slot (`authRelease`, via `waitUntil`) and evaluates no
+     password.
 2. **Verify** the password (§5.1).
-3. **Correct** → release inflight via `waitUntil`; continue to the route.
-4. **Wrong** → one `MULTI`: `SET fail 0 EX <window> NX`, `INCR fail`, `DECR inflight` (the first
-   failure starts a fixed window; no Redis 7 `EXPIRE … NX`). With `f` = new failure count: set
-   `auth:wait:S` to `min(base·2^(f-2), max)` ms when `f ≥ 2`; when `f = AUTH_MAX_FAILURES` (one
-   request per window), `INCR strikes` (EX 7d) and set `auth:block:S` for
-   `AUTH_BLOCK_SECONDS·2^(strikes-1)` capped at 86400 s. Record an `auth` event. Respond 401
-   `invalid_credentials` after sleeping `min(wait, 1000)` ms, with `Retry-After` when a wait is set.
-5. **Store unavailable** at any step (error or >1500 ms timeout) → 503 `store_unavailable`, fail
-   closed, no password evaluation.
+3. **Correct** → `authRelease` via `waitUntil` (inflight − 1, never below 0; the row is deleted
+   once nothing in it is active); continue to the route.
+4. **Wrong** → `authFailure`, one statement: `f` = (window active ? count : 0) + 1, the first
+   failure fixing the window end at now + `AUTH_WINDOW_SECONDS` (a fixed window); release the
+   inflight slot; when `f = AUTH_MAX_FAILURES` (exactly one request per window), strikes =
+   (active ? strikes : 0) + 1 with the end now + 7 days. Then `authPenalty` sets the wait to
+   `min(base·2^(f-2), max)` ms when `f ≥ 2` and, on a strike, the block to
+   `AUTH_BLOCK_SECONDS·2^(strikes-1)` capped at 86400 s, as end times that never shorten one
+   already set. Record an `auth` event. Respond 401 `invalid_credentials` after sleeping
+   `min(wait, 1000)` ms, with `Retry-After` when a wait is set.
+5. **Store unavailable** at any step (an error, a client not acquired within 5000 ms, or
+   statements slower than 1500 ms) → 503 `store_unavailable`, fail closed, no password
+   evaluation.
 
 Guarantee to test: across any number of instances and any concurrency, wrong-password
 evaluations per source per window ≤ `AUTH_MAX_FAILURES + AUTH_MAX_INFLIGHT`, after which the
-source is blocked even for the correct password until the block expires.
+source is blocked even for the correct password until the block expires. It holds because every
+precheck and failure of one source serializes on that source's row lock and acts on the latest
+committed row, so each request gets a distinct inflight and failure count.
 
 ### 5.3 Model routing (`src/routing.js`)
 
@@ -286,8 +370,10 @@ Every upstream or gateway error (except plain 401s, which are `auth` events) app
 
 ## 6. Provider keys (`src/keys.js`)
 
-Effective key per provider = Redis override (`mr:v1:keys` hash field = provider id, value JSON
-`{v:1, iv, ct, tag, updated_at}`, AES-256-GCM, AAD = provider id) else env var else none.
+Effective key per provider = stored override (`michael_router.provider_keys` row: `provider` =
+provider id, `record` = JSON `{v:1, iv, ct, tag, updated_at}`, AES-256-GCM, AAD = provider id;
+`updated_at` column for operators) else env var else none. Every precheck returns all records
+(§5.2), so resolving a key costs no extra round trip.
 Keys must be 8–512 printable non-space ASCII. Decrypted values may be cached in memory keyed by
 provider id + the whole stored record (so a changed or moved record is decrypted afresh). `PUT` never echoes the key; `verify:true` calls the provider's model-list endpoint
 before storing and stores only a key the provider accepted (reporting `verified: true` plus the
@@ -295,12 +381,15 @@ upstream status); a rejected or unverifiable key is refused and not stored.
 
 ## 7. Usage and cost (`src/usage.js`, `src/pricing.json`)
 
-Recorded after the response (non-streaming) or at stream end, via `waitUntil`, one pipeline:
-`HINCRBY mr:v1:usage:<YYYY-MM-DD> "<provider>\t<model>\t<metric>" n` for metrics `requests`,
+Recorded after the response (non-streaming) or at stream end, via `waitUntil`, as one
+`addUsage` statement adding `n` to the `usage_daily` row (UTC day, provider, model, metric) for
+metrics `requests`,
 `errors`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `cache_write_tokens`,
 `reasoning_tokens`, `cost_nusd` (integer nano-USD), `cost_exact` (provider-reported count),
 `cost_estimated`, `cost_unknown`, and `usage_missing` (a billable request that reported no
-usage); only non-zero metrics are written; `EXPIRE … 34560000` (400 d).
+usage); only non-zero metrics are written. The same statement deletes days older than 400 days
+(UTC). Concurrent writers never lose an update (`ON CONFLICT DO UPDATE SET value = value + n`)
+and never deadlock (§2); totals beyond 2^53 − 1 are skipped as malformed when read.
 
 Cost per request, in priority order:
 1. provider-reported (`usage.cost` from OpenRouter; OpenRouter credits are USD) → `exact`;
@@ -326,17 +415,20 @@ as zero.
 
 ## 8. Events, logging, redaction
 
-- `mr:v1:events` list, `LPUSH` + `LTRIM 0 199`. Event: `{ts, kind: auth|upstream|gateway, code,
+- `michael_router.events` rows; each append inserts, then deletes every row older than the 200th
+  newest (by rank, so gaps in the identity ids change nothing; rows another trim holds are
+  skipped), so concurrent appends leave exactly the newest 200. Listed newest first. Event: `{ts, kind: auth|upstream|gateway, code,
   status, upstream_status?, provider?, model?, message, source? (auth only, display form),
   request_id}`. `message` is a fixed gateway sentence chosen by `code` (`EVENT_MESSAGES` in
   `src/events.js`; for a provider's own code, "The provider answered HTTP n." or, for an error
   inside a stream, "The provider reported an error inside the stream."). It interpolates only
   numbers (a block duration, an HTTP status).
 - Never stored or logged anywhere: request bodies, prompts, completions, headers, the password,
-  the password hash, provider keys, `ROUTER_SECRET`, store token, and no provider, client or
+  the password hash, provider keys, `ROUTER_SECRET`, the database URLs and passwords, and no provider, client or
   exception text at all: provider error messages can quote the prompt, so only the client that
   sent the request receives them (scrubbed).
-- `src/redact.js` replaces configured provider keys, the presented bearer value and patterns
+- `src/redact.js` replaces configured provider keys, the database URLs and the passwords in them
+  (as written and percent-decoded), the presented bearer value and patterns
   (`sk-ant-…`, `sk-or-…`, `AIza…`, `Bearer …`, long base64/hex tokens) with `[redacted]`.
 - `src/log.js` emits one JSON line per request with allowlisted fields only:
   `request_id, route, method, status, provider, model, duration_ms, upstream_ms, store_ms,
@@ -370,16 +462,29 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 gateway auth/limit, 4 upstream/provider er
 | `errors [--limit N] [--kind K]` | recent events |
 | `hash-password` | read password hidden/stdin, print `ROUTER_PASSWORD_HASH` value to stdout (newline only on a terminal) |
 
-## 10. Deterministic key copy to Vercel (`scripts/copy-keys-to-vercel.mjs`)
+## 10. Operator scripts
+
+### 10.1 Deterministic key copy to Vercel (`scripts/copy-keys-to-vercel.mjs`)
 
 Run by whoever deploys, on the machine that holds the permitted sources. Input: a manifest
-(kept outside the repository or in the gitignored `scripts/key-sources.json`) pinning the target
+(kept outside the repository or in the gitignored `scripts/key-sources.json` or
+`scripts/database-sources.json`) pinning the target
 project (`"project": {"orgId": "team_…", "projectId": "prj_…"}`, required) and naming, for each Vercel env
 var, exactly one source. Source types: `keychain` (`security find-generic-password -s S -a A -w`,
 value read from the child's stdout pipe), `file` (absolute path + variable name in a dotenv
-file), `op` (`op read <ref>`), `stdin` (at most one entry), `generate` (random bytes,
-`onlyIfAbsent`). Optional `transform: "scrypt-hash"` (for the password). Fixed order = manifest
-order.
+file), `op` (`op read <ref>`), `stdin` (at most one entry), `stdin-env` (`var`: one variable of
+a dotenv document on stdin, read once and shared by every `stdin-env` entry; never together with
+`stdin`; descriptor `stdin-env:<NAME>`), `generate` (random bytes, `onlyIfAbsent`). Optional
+`transform: "scrypt-hash"` (for the password). Fixed order = manifest order. Dotenv documents
+(files and stdin) go through one strict parser (`scripts/lib/env-document.mjs`): `NAME=value`
+lines, comments and `export`, quotes stripped, no expansion; any other line or a variable set
+twice is refused.
+
+Values are checked against the server's own rules for their variable before anything is sent.
+`DATABASE_URL_POOLED` and `DATABASE_URL` (kind `database-url`): scheme `postgres:` or
+`postgresql:`; host, user and password present; `sslmode` `require` or `verify-full`; accepted by
+the store's production URL check (§4); on a `*.neon.tech` host, `DATABASE_URL_POOLED` must be the
+`-pooler` endpoint and `DATABASE_URL` must not be. The reason never names a part of the value.
 
 Rules: refuse manifest entries outside these types, and source descriptors that hold key-shaped
 text; refuse file paths under prohibited roots (agent and tool homes `.hermes`, `.claude`,
@@ -403,8 +508,25 @@ never replaced); stop at the first failure — including a guard refusal — pri
 name, source name and the scrubbed refusal text, with no fallback to other sources; finish by
 listing env names present in Vercel (names only). `--check` validates access and value shape
 without transferring.
-The repository ships only `scripts/key-sources.example.json` with placeholder source names; the
-real manifest and any machine-specific deployment steps live with the operator, not in the repo.
+The repository ships only `scripts/key-sources.example.json` and
+`scripts/database-sources.example.json` with placeholder source names; the real manifests and any
+machine-specific deployment steps live with the operator, not in the repo.
+
+### 10.2 Migrations (`scripts/migrate.mjs`)
+
+`<database env source> | node scripts/migrate.mjs [--var NAME] [--apply]`. Stdin holds a dotenv
+document (`--var` names the variable, default `DATABASE_URL`, the direct endpoint) or one bare
+`postgres://` line; a terminal, more than 64 KiB, a variable set twice or missing, or a URL the
+store would not accept is a usage error naming the variable. The URL is turned into pg options by
+the store's own function (`pgConnectionOptions` in `src/store/database-url.js`); every `PG*`
+variable is removed first and `~/.pgpass` is never read, so the URL alone decides the target.
+
+Without `--apply` it prints the server's major version, whether schema `michael_router` exists,
+the applied and pending versions and any refusal, and changes nothing (read-only transaction).
+`--apply` plans, applies the pending migrations (§2), prints each version applied, then plans
+again and prints the final state. Exit codes: 0 up to date or applied, 4 pending, 3 refused,
+2 usage, 1 connection or unexpected error. No output line holds the URL, host, user, database
+name or password; errors are a fixed description plus the SQLSTATE.
 
 ## 11. Landing page (`public/`)
 
@@ -426,8 +548,9 @@ horizontal scroll at 360 px.
 - Gateway overhead: identical requests sent (a) directly to a fixed-latency local fake upstream and
   (b) through `dev/server.js` → same fake; overhead = (b) − (a). Non-streaming total and
   streaming TTFB, sequential and concurrent, N ≥ 500, distributions (p50/p90/p99/max) saved
-  as JSON + markdown under `evidence/speed/round-N/`. Store RTT is simulated explicitly
-  (fake Upstash with configurable delay) and reported separately.
+  as JSON + markdown under `evidence/speed/round-N/`. The router uses the in-process memory store:
+  a PostgreSQL round trip is not modelled (a fixed delay would not represent its pool, TLS and
+  server time honestly), so the store's cost is measured only live.
 - Cold start: fresh process → first successful protected response, N ≥ 30, against a
   hello-world handler baseline; plus module import time of `api/router.js`.
 - Live (deployment stage): small N through-router vs direct provider with the same tiny request,
@@ -438,17 +561,22 @@ horizontal scroll at 360 px.
 
 The repository is public. Nothing in it may identify a machine, a home directory, a host name or
 an operator workflow, and nothing in it or its history may contain a provider key, the access
-password, its hash, `ROUTER_SECRET`, a store token or a real prompt.
+password, its hash, `ROUTER_SECRET`, a database URL with its password or a real prompt.
 
 - Test fixtures use fake values whose shape does not match a real key (`sk-ant-fake-…`, never
-  `sk-ant-api03-…` of real length), and generate password hashes at runtime.
+  `sk-ant-api03-…` of real length), and generate password hashes at runtime. Database URLs in
+  fixtures use hosts under the reserved `.test` top-level domain or a local socket, with
+  generated or `SENTINEL` passwords.
 - `scripts/scan-secrets.mjs` scans the working tree (`git ls-files -co --exclude-standard`, paths
   of every entry), every path of every commit, every object reachable from any ref
   (`git rev-list --objects --all`, including directly tagged blobs and trees and nested tags) and
   every commit and tag object, for: real-shaped provider keys (Anthropic `sk-ant-api…`/
   `sk-ant-admin…` and OAuth `sk-ant-oat…`/`sk-ant-ort…`, OpenRouter `sk-or-v1-<64 hex>`, Google
   `AIza<35>`), `scrypt$…` password hashes (also escaped or URL-encoded), private-key blocks,
-  Upstash/Vercel token shapes, `redis://` URL credentials and absolute home-directory paths; plus
+  token shapes assigned to the Vercel and former REST-store token variables, `redis://` URL
+  credentials, Postgres credentials (`postgres://` URLs in any case, JSON-escaped or `jdbc:`, with
+  the password in the user info or a `password` parameter; `PGPASSWORD` given a value; libpq
+  `host=… password=…` strings; never on `.test` hosts) and absolute home-directory paths; plus
   exact literal values supplied on stdin (one per line, also checked in base64, base64url,
   URL-encoded and JSON-escaped forms). Archives, missing objects and very large files are
   reported as unscanned findings, never passed as clean. Output is counts and locations only

@@ -1,16 +1,18 @@
-// In-process handler harness: memory store, captured logs and waitUntil promises.
+// In-process handler harness: memory store (unless given one), captured logs and waitUntil promises.
 import { createHandler } from '../../src/handler.js';
 import { createMemoryStore } from '../../src/store/memory.js';
 import { OFFLINE_BASE_URLS, baseEnv } from './fixtures.js';
 
 /**
- * Provider base URLs default to a closed port unless `env` points them at a fake.
+ * Provider base URLs default to a closed port unless `env` points them at a fake. `store: null`
+ * lets the handler build its store from the configuration.
  * @param {{env?: Record<string, string>, clock?: {now: () => number}, store?: any, sleep?: (ms: number) => Promise<void>,
- *   verifyPassword?: any, verifyProviderKey?: any, upstreamTimeoutMs?: number, rawEnv?: boolean}} [options]
+ *   verifyPassword?: any, verifyProviderKey?: any, upstreamTimeoutMs?: number, rawEnv?: boolean,
+ *   attachDatabasePool?: (pool: import('pg').Pool) => void}} [options]
  */
 export async function makeHarness(options = {}) {
   const now = options.clock?.now;
-  const store = options.store ?? createMemoryStore({ now });
+  const store = options.store === undefined ? createMemoryStore() : options.store;
   const env = options.rawEnv ? { ...OFFLINE_BASE_URLS, ...options.env } : await baseEnv({ ...OFFLINE_BASE_URLS, ...options.env });
   /** @type {string[]} */
   const logs = [];
@@ -20,7 +22,7 @@ export async function makeHarness(options = {}) {
   const pending = [];
   const handler = createHandler({
     env,
-    store,
+    store: store ?? undefined,
     now,
     sleep:
       options.sleep ??
@@ -30,6 +32,7 @@ export async function makeHarness(options = {}) {
     verifyPassword: options.verifyPassword,
     verifyProviderKey: options.verifyProviderKey,
     upstreamTimeoutMs: options.upstreamTimeoutMs,
+    attachDatabasePool: options.attachDatabasePool,
     logSink: (line) => logs.push(line),
     errorSink: (line) => logs.push(line),
   });

@@ -5,8 +5,8 @@ import { performance } from 'node:perf_hooks';
 import { PROVIDER_IDS } from './config.js';
 import { EVENT_KINDS, listEvents } from './events.js';
 import { GatewayError, errorEnvelope, jsonResponse, readJsonBody } from './http.js';
-import { KEYS_HASH, encryptProviderKey, isProviderId, publicKeyInfo, validateProviderKey } from './keys.js';
-import { aggregateUsage, usageDays, usageKey } from './usage.js';
+import { encryptProviderKey, isProviderId, publicKeyInfo, validateProviderKey } from './keys.js';
+import { aggregateUsage, usageDays } from './usage.js';
 import { VERSION } from './version.js';
 
 const KEY_BODY_MAX_BYTES = 16 * 1024;
@@ -26,7 +26,7 @@ function providerParam(ctx) {
 /** GET /control/health @param {any} ctx */
 export async function health(ctx) {
   const t = performance.now();
-  await ctx.store.command(['PING']);
+  const { schemaVersion } = await ctx.store.ping();
   const latency = performance.now() - t;
   const startedAt = ctx.instance.startedAt;
   return jsonResponse(200, {
@@ -35,7 +35,7 @@ export async function health(ctx) {
     commit: ctx.config.commit,
     region: ctx.config.region,
     instance: { started_at: new Date(startedAt).toISOString(), age_s: Math.round((ctx.now() - startedAt) / 1000), cold: ctx.cold },
-    store: { kind: ctx.store.kind, latency_ms: round1(latency) },
+    store: { kind: ctx.store.kind, latency_ms: round1(latency), schema_version: schemaVersion },
     providers: Object.fromEntries(PROVIDER_IDS.map((id) => [id, { configured: ctx.keys[id].configured }])),
   });
 }
@@ -79,7 +79,7 @@ export async function setKey(ctx) {
     verification = { verified: true, upstream_status: status };
   }
   const updated_at = new Date(ctx.now()).toISOString();
-  await ctx.store.command(['HSET', KEYS_HASH, provider, encryptProviderKey(ctx.config.keyEncryptionKey, provider, key, updated_at)]);
+  await ctx.store.setProviderKey(provider, encryptProviderKey(ctx.config.keyEncryptionKey, provider, key, updated_at), updated_at);
   return jsonResponse(200, { provider, configured: true, source: 'store', updated_at, ...verification });
 }
 
@@ -99,22 +99,21 @@ function keyNotStored(ctx, provider, status, code, message, upstreamStatus) {
 /** DELETE /control/keys/:provider — remove the override (falls back to env) @param {any} ctx */
 export async function unsetKey(ctx) {
   const provider = providerParam(ctx);
-  const removed = await ctx.store.command(['HDEL', KEYS_HASH, provider]);
+  const removed = await ctx.store.deleteProviderKey(provider);
   const envKey = ctx.config.providers[provider].envKey;
   return jsonResponse(200, {
     provider,
     configured: Boolean(envKey),
     source: envKey ? 'env' : 'none',
     updated_at: null,
-    removed: Number(removed) > 0,
+    removed: removed === true,
   });
 }
 
 /** GET /control/usage?days=N | ?since=YYYY-MM-DD @param {any} ctx */
 export async function usage(ctx) {
   const { from, to, days } = usageDays(ctx.url.searchParams, ctx.now());
-  const hashes = await ctx.store.pipeline(days.map((d) => ['HGETALL', usageKey(d)]));
-  return jsonResponse(200, { from, to, days: days.length, ...aggregateUsage(hashes) });
+  return jsonResponse(200, { from, to, days: days.length, ...aggregateUsage(await ctx.store.readUsage(from, to)) });
 }
 
 /** GET /control/errors?limit=N&kind=auth|upstream|gateway @param {any} ctx */

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "environment": "production",
+  "project": { "orgId": "team_example", "projectId": "prj_example" },
+  "entries": [
+    { "env": "DATABASE_URL_POOLED", "source": { "type": "stdin-env", "var": "DATABASE_URL_POOLED" } }
+  ]
+}

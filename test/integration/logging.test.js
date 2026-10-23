@@ -1,14 +1,16 @@
 // End-to-end secrecy: run every kind of request — control routes, proxied successes, streaming,
-// every error class — with sentinel secrets through real dev-server processes, fake Upstash and
-// the fake providers, then assert no sentinel appears in any log line, response, event or the
-// store, and that every log line carries allowlisted fields only.
+// every error class — with sentinel secrets through real dev-server processes, a task-local
+// Postgres (password auth with a generated password) and the fake providers, then assert no
+// sentinel appears in any log line, response, event or row of any michael_router table, and that
+// every log line carries allowlisted fields only.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { startFakeProviders } from '../../dev/fake-providers.js';
 import { EXCEPTION_FIELDS, LOG_FIELDS } from '../../src/log.js';
 import { REDACTED } from '../../src/redact.js';
-import { ENV_KEYS, PASSWORD, ROUTER_SECRET, STORE_TOKEN, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
-import { startDevServer, startFakeUpstash } from '../helpers/processes.js';
+import { ENV_KEYS, PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
+import { dumpRouterTables, generatedPassword, migrate, startPostgres } from '../helpers/postgres.js';
+import { startDevServer } from '../helpers/processes.js';
 
 const STORED_KEY = 'sk-ant-fake-SENTINEL-logged-claude-0008';
 const KEPT_KEY = 'sk-or-fake-SENTINEL-kept-openrouter-0009';
@@ -19,8 +21,11 @@ const PROMPT = 'prompt-SENTINEL-do-not-log-this-text';
 let dev;
 /** @type {Awaited<ReturnType<typeof startDevServer>>} */
 let plain;
-/** @type {Awaited<ReturnType<typeof startFakeUpstash>>} */
-let store;
+/** @type {Awaited<ReturnType<typeof startPostgres>>} */
+let cluster;
+const DB_PASSWORD = generatedPassword();
+/** @type {string} */
+let dbUrl;
 /** @type {Awaited<ReturnType<typeof startFakeProviders>>} */
 let providers;
 /** @type {string} */
@@ -28,14 +33,15 @@ let hash;
 
 before(async () => {
   hash = await passwordHash();
-  [store, providers] = await Promise.all([startFakeUpstash(STORE_TOKEN, ['--debug-dump']), startFakeProviders()]);
+  [cluster, providers] = await Promise.all([startPostgres(), startFakeProviders()]);
+  dbUrl = await cluster.createDatabase('logging', { password: DB_PASSWORD });
+  await migrate(dbUrl);
   [dev, plain] = await Promise.all([
     startDevServer(
       {
         ROUTER_PASSWORD_HASH: hash,
         ROUTER_SECRET,
-        KV_REST_API_URL: store.url,
-        KV_REST_API_TOKEN: STORE_TOKEN,
+        DATABASE_URL: dbUrl,
         ...ENV_KEYS,
         ...providers.env,
         AUTH_BACKOFF_BASE_MS: '10',
@@ -47,7 +53,8 @@ before(async () => {
   ]);
 });
 after(async () => {
-  await Promise.all([dev?.stop(), plain?.stop(), store?.stop(), providers?.close()]);
+  await Promise.all([dev?.stop(), plain?.stop(), providers?.close()]);
+  await cluster?.stop();
 });
 
 /** @param {string} model @param {Record<string, unknown>} [extra] */
@@ -61,7 +68,8 @@ const SECRETS = () => [
   WRONG_PASSWORD,
   PLAIN_PASSWORD,
   ROUTER_SECRET,
-  STORE_TOKEN,
+  DB_PASSWORD,
+  dbUrl,
   hash,
   ...hash.split('$').slice(4),
   STORED_KEY,
@@ -157,7 +165,8 @@ test('no secret or prompt reaches logs, events or the store across the whole API
 
   assert.equal((await fetch(`${dev.url}/`)).status, 200);
   await new Promise((r) => setTimeout(r, 300)); // background event/usage writes
-  const dump = await (await fetch(`${store.url}/__dump`, { headers: { authorization: `Bearer ${STORE_TOKEN}` } })).text();
+  const tables = await dumpRouterTables(dbUrl);
+  const dump = JSON.stringify(tables);
   await dev.stop();
   const { stdout, stderr } = dev.output();
   for (const [name, text] of [
@@ -168,9 +177,11 @@ test('no secret or prompt reaches logs, events or the store across the whole API
     for (const secret of SECRETS()) assert.ok(!text.includes(secret), `${name} contains a secret`);
     assert.ok(!text.includes('SENTINEL'), `${name} contains a sentinel`);
   }
-  assert.match(dump, /mr:v1:keys/, 'the dump does contain the (encrypted) key record');
-  assert.match(dump, /mr:v1:events/);
-  assert.match(dump, /mr:v1:usage:/);
+  assert.deepEqual(Object.keys(tables), ['auth_sources', 'events', 'provider_keys', 'schema_migrations', 'usage_daily'], 'every table was dumped');
+  for (const table of ['auth_sources', 'events', 'provider_keys', 'usage_daily']) assert.ok(tables[table].length > 0, `${table} has rows`);
+  for (const row of tables.provider_keys) {
+    assert.deepEqual(Object.keys(JSON.parse(JSON.parse(row).record)).sort(), ['ct', 'iv', 'tag', 'updated_at', 'v'], 'records are ciphertext only');
+  }
   const lines = checkLogs(stdout, stderr, steps.length);
   assert.deepEqual(
     lines.map((l) => l.status),
@@ -184,12 +195,12 @@ test('no secret or prompt reaches logs, events or the store across the whole API
 
 test('error text quoting the prompt or other client text reaches the client, never the store, events or logs', async () => {
   const MARKER = 'marker-SENTINEL-quoted-prompt-0042';
-  const echoStore = await startFakeUpstash(STORE_TOKEN, ['--debug-dump']);
+  const echoUrl = await cluster.createDatabase('logging_echo');
+  await migrate(echoUrl);
   const echo = await startDevServer({
     ROUTER_PASSWORD_HASH: hash,
     ROUTER_SECRET,
-    KV_REST_API_URL: echoStore.url,
-    KV_REST_API_TOKEN: STORE_TOKEN,
+    DATABASE_URL: echoUrl,
     ...ENV_KEYS,
     ...providers.env,
   });
@@ -222,7 +233,8 @@ test('error text quoting the prompt or other client text reaches the client, nev
     const events = await (await fetch(`${echo.url}/control/errors?limit=200`, { headers: { authorization: `Bearer ${PASSWORD}` } })).json();
     assert.equal(events.length, steps.length, 'every error is recorded');
     assert.ok(events.every((/** @type {any} */ e) => typeof e.message === 'string' && e.message !== ''), 'with a static message');
-    const dump = await (await fetch(`${echoStore.url}/__dump`, { headers: { authorization: `Bearer ${STORE_TOKEN}` } })).text();
+    const tables = await dumpRouterTables(echoUrl);
+    const dump = JSON.stringify(tables);
     await echo.stop();
     const { stdout, stderr } = echo.output();
     for (const [name, text] of [
@@ -233,10 +245,10 @@ test('error text quoting the prompt or other client text reaches the client, nev
     ]) {
       assert.ok(!text.includes(MARKER), `${name} contains client text`);
     }
-    assert.match(dump, /mr:v1:events/);
+    assert.equal(tables.events.length, steps.length, 'the events are in the store');
     assert.equal(checkLogs(stdout, stderr, steps.length + 1).length, steps.length + 1);
   } finally {
-    await Promise.all([echo.stop(), echoStore.stop()]);
+    await echo.stop();
   }
 });
 

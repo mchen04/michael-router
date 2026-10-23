@@ -1,9 +1,8 @@
-// Provider key resolution: store override (mr:v1:keys, AES-256-GCM, AAD = provider id) > env > none.
+// Provider key resolution: store override (provider_keys, AES-256-GCM, AAD = provider id) > env > none.
 import { Buffer } from 'node:buffer';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { PROVIDER_IDS, providerKeyProblem } from './config.js';
 
-export const KEYS_HASH = 'mr:v1:keys';
 const CACHE_MAX = 32;
 
 /**
@@ -62,14 +61,6 @@ export function decryptProviderKey(kek, provider, blob) {
   return { key, updated_at: typeof o.updated_at === 'string' ? o.updated_at : null };
 }
 
-/** HGETALL flat array -> object. @param {unknown} flat @returns {Record<string, string>} */
-export function hashToObject(flat) {
-  /** @type {Record<string, string>} */
-  const out = {};
-  if (Array.isArray(flat)) for (let i = 0; i + 1 < flat.length; i += 2) out[String(flat[i])] = String(flat[i + 1]);
-  return out;
-}
-
 /** @param {string} provider @returns {EffectiveKey} */
 const none = (provider) => ({ provider, configured: false, source: 'none', updated_at: null, key: null });
 
@@ -88,17 +79,16 @@ export function createKeyResolver(config) {
 
   return {
     /**
-     * @param {unknown} keysHash raw HGETALL mr:v1:keys result from the precheck pipeline
+     * @param {Record<string, unknown>} stored `{provider: record}` read by the precheck
      * @param {(provider: string) => void} [onUndecryptable] called once per instance per bad record
      * @returns {Record<string, EffectiveKey>}
      */
-    resolve(keysHash, onUndecryptable) {
-      const stored = hashToObject(keysHash);
+    resolve(stored, onUndecryptable) {
       /** @type {Record<string, EffectiveKey>} */
       const out = {};
       for (const id of PROVIDER_IDS) {
-        const blob = stored[id];
-        if (blob !== undefined) {
+        if (stored && Object.hasOwn(stored, id)) {
+          const blob = String(stored[id]);
           const cacheKey = `${id}\n${blob}`;
           let hit = cache.get(cacheKey);
           if (!hit) {

@@ -12,9 +12,11 @@
 // non-streaming and a streaming chat completion with a tiny prompt on its smoke model
 // (src/pricing.json `smoke_models`), plus one tool-call request for claude (a single `get_time`
 // function), then /control/usage?days=1, /control/errors?limit=5 and one request without
-// credentials (expect 401). Only with --probe-wrong-password, last, one wrong password (expect
-// 401): it counts a failed attempt for this host's source, and failures add up within the
-// limiter window. Keys are only read, never set.
+// credentials (expect 401 missing_credentials). The router answers that one before any store
+// call, so it shows only that the deployment answers and its configuration parses; the store
+// evidence is the authenticated health check (docs/DEPLOY.md step 6). Only with
+// --probe-wrong-password, last, one wrong password (expect 401): it counts a failed attempt for
+// this host's source, and failures add up within the limiter window. Keys are only read, never set.
 //
 // Per call it records only: provider, model, mode, HTTP status, x-router-* headers,
 // server-timing, TTFB and total ms, token usage, cost and cost status, finish_reason, the first
@@ -58,7 +60,7 @@ const GET_TIME = {
     parameters: { type: 'object', properties: { timezone: { type: 'string', description: 'IANA time zone, e.g. UTC' } }, required: ['timezone'] },
   },
 };
-const STORE_VARS = /^(?:KV_REST_API_|UPSTASH_REDIS_REST_|ROUTER_STORE)/;
+const STORE_VARS = /^(?:DATABASE_URL|ROUTER_STORE)/;
 
 class UsageError extends Error {}
 
@@ -238,8 +240,8 @@ function diagnose(h, origin) {
     return {
       code,
       message:
-        'store unavailable (503 store_unavailable): the router has store variables but the store failed or answered too slowly. ' +
-        'Check that the Redis database exists, is within its plan limits, and that its REST URL and token are current.',
+        'store unavailable (503 store_unavailable): the router has a database URL but the store failed or answered too slowly. ' +
+        'Check that the Postgres database is reachable, that its URL and password are current, and that the migrations have run.',
     };
   }
   if (h.status === 503 && code === 'server_misconfigured') {
@@ -250,8 +252,8 @@ function diagnose(h, origin) {
       return {
         code: 'store_missing',
         message:
-          `store missing or invalid (503 server_misconfigured: ${store.join(', ')}). Connect an Upstash-REST-compatible Redis, ` +
-          'either through the Vercel Marketplace (KV_REST_API_URL/KV_REST_API_TOKEN) or as UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN, then redeploy' +
+          `store missing or invalid (503 server_misconfigured: ${store.join(', ')}). Set DATABASE_URL_POOLED (preferred) or ` +
+          'DATABASE_URL to a Postgres URL with sslmode=require, run the migrations, then redeploy' +
           (other.length ? `; also missing or invalid: ${other.join(', ')}` : ''),
       };
     }

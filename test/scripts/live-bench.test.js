@@ -1,4 +1,4 @@
-// bench/live.mjs against the local dev server with fake Upstash and fake providers (mocked
+// bench/live.mjs against the local dev server with the memory store and fake providers (mocked
 // evidence, labelled as such by the script because the target is loopback).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';

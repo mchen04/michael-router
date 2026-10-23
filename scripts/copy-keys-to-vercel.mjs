@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// Deterministic secret transfer to Vercel environment variables (DESIGN §10).
+// Deterministic secret transfer to Vercel environment variables (DESIGN §10.1).
 //
 //   node scripts/copy-keys-to-vercel.mjs --manifest <path> [--environment production] [--check | --yes]
 //
 // The manifest pins the Vercel project ("project": {"orgId", "projectId"}) and names, for each
-// Vercel environment variable, exactly one source; entries are handled in manifest order. Modes:
+// Vercel environment variable, exactly one source; entries are handled in manifest order. Sources:
+// keychain, op, file (one variable of a dotenv file), stdin (the raw value; at most one entry),
+// stdin-env (one variable of a dotenv document on stdin, read once and shared by every stdin-env
+// entry; never together with a stdin entry) and generate. Dotenv parsing is strict and shared with
+// scripts/migrate.mjs (scripts/lib/env-document.mjs). Modes:
 //   (default)  print the plan (project, env name <- source name, plan digest) and exit; nothing is read.
 //   --check    read and validate every source; no `vercel` command except `env ls`.
 //   --yes      read, validate and transfer each value with `vercel env add <NAME> production --force
@@ -32,6 +36,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { hashPassword, parsePasswordHash } from '../src/auth.js';
 import { MIN_PASSWORD_LENGTH, providerKeyProblem } from '../src/config.js';
 import { scrub } from '../src/redact.js';
+import { missingUrlPart, parseDatabaseUrl, urlHost } from '../src/store/database-url.js';
+import { envValue, parseEnvDocument, readStdin } from './lib/env-document.mjs';
 
 export const EXIT = Object.freeze({ OK: 0, ERROR: 1, USAGE: 2, STOPPED: 3 });
 
@@ -43,13 +49,9 @@ const NAMES = Object.freeze({
   ROUTER_PASSWORD_HASH: 'password-hash',
   ROUTER_PASSWORD: 'password',
   ROUTER_SECRET: 'secret',
-  UPSTASH_REDIS_REST_URL: 'store-url',
-  UPSTASH_REDIS_REST_TOKEN: 'store-token',
+  DATABASE_URL_POOLED: 'database-url',
+  DATABASE_URL: 'database-url',
 });
-const STORE_PAIRS = [
-  ['KV_REST_API_URL', 'KV_REST_API_TOKEN'],
-  ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'],
-];
 /** The only environment variables passed on to `vercel`, `security` and `op` (when set). */
 const CHILD_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'OP_ACCOUNT'];
 /** The repository root: every `vercel` command runs here, and its .vercel/project.json is checked. */
@@ -67,7 +69,6 @@ const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_ENTRIES = Object.keys(NAMES).length;
 const MAX_VALUE_BYTES = 4096;
 const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
-const MAX_STDIN_BYTES = 64 * 1024;
 const MAX_CHILD_OUTPUT = 1024 * 1024;
 const CHILD_TIMEOUT_MS = 180_000;
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -81,7 +82,7 @@ const printable = (s) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '?');
 
 /**
  * @typedef {{type: 'keychain', service: string, account: string} | {type: 'file', path: string, var: string} |
- *   {type: 'op', ref: string} | {type: 'stdin'} | {type: 'generate', bytes: number}} Source
+ *   {type: 'op', ref: string} | {type: 'stdin'} | {type: 'stdin-env', var: string} | {type: 'generate', bytes: number}} Source
  * @typedef {{env: keyof typeof NAMES, source: Source, transform: 'scrypt-hash' | null, onlyIfAbsent: boolean, file?: string}} Entry
  * @typedef {{orgId: string, projectId: string}} Project
  * @typedef {{version: 1, environment: string, project: Project, entries: Entry[]}} Manifest
@@ -222,12 +223,17 @@ function parseSource(raw, where, home, roots) {
     case 'stdin':
       exactKeys(s, ['type'], [], where);
       return { type: 'stdin' };
+    case 'stdin-env':
+      exactKeys(s, ['type', 'var'], [], where);
+      if (typeof s.var !== 'string' || !NAME_RE.test(s.var) || s.var.length > 128) throw new UsageError(`${where}: stdin-env "var" must be a variable name`);
+      refuseSecretShaped(s.var, 'stdin-env "var"', where);
+      return { type: 'stdin-env', var: s.var };
     case 'generate':
       exactKeys(s, ['type', 'bytes'], [], where);
       if (!Number.isInteger(s.bytes) || s.bytes < 32 || s.bytes > 64) throw new UsageError(`${where}: generate "bytes" must be an integer from 32 to 64`);
       return { type: 'generate', bytes: s.bytes };
     default:
-      throw new UsageError(`${where}: source "type" must be one of keychain, file, op, stdin, generate`);
+      throw new UsageError(`${where}: source "type" must be one of keychain, file, op, stdin, stdin-env, generate`);
   }
 }
 
@@ -244,7 +250,8 @@ function parseProject(raw) {
 
 /**
  * Validate a parsed manifest. A missing or malformed project, unknown keys anywhere, unknown or
- * repeated names, a second stdin entry and prohibited file paths are refused.
+ * repeated names, a second stdin entry, stdin and stdin-env entries together, and prohibited
+ * file paths are refused.
  * @param {unknown} raw @param {{home?: string, environment?: string}} [options]
  * @returns {Manifest}
  */
@@ -283,12 +290,13 @@ export function validateManifest(raw, { home = os.homedir(), environment } = {})
     }
     entries.push({ env: o.env, source, transform: o.transform ?? null, onlyIfAbsent: o.onlyIfAbsent === true });
   });
-  if (entries.filter((e) => e.source.type === 'stdin').length > 1) throw new UsageError('manifest: at most one entry may read stdin');
+  const stdinEntries = entries.filter((e) => e.source.type === 'stdin').length;
+  if (stdinEntries > 1) throw new UsageError('manifest: at most one entry may read stdin');
+  if (stdinEntries && entries.some((e) => e.source.type === 'stdin-env')) {
+    throw new UsageError('manifest: a "stdin" entry (the raw value) and "stdin-env" entries (a dotenv document) cannot share stdin');
+  }
   if (seen.has('ROUTER_PASSWORD_HASH') && seen.has('ROUTER_PASSWORD')) {
     throw new UsageError('manifest: set ROUTER_PASSWORD_HASH or ROUTER_PASSWORD, not both (the router refuses to start with both)');
-  }
-  if (seen.has('UPSTASH_REDIS_REST_URL') !== seen.has('UPSTASH_REDIS_REST_TOKEN')) {
-    throw new UsageError('manifest: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN go together');
   }
   return { version: 1, environment: m.environment, project, entries };
 }
@@ -331,6 +339,8 @@ function sourceName(s) {
       return printable(`op:${s.ref}`);
     case 'generate':
       return `generate:${s.bytes}`;
+    case 'stdin-env':
+      return `stdin-env:${s.var}`;
     default:
       return 'stdin';
   }
@@ -434,38 +444,6 @@ function trimNewline(b) {
 
 // ------------------------------------------------------------------ sources
 
-/** One variable from a dotenv file: no expansion, no evaluation, quotes stripped. @param {string} text @param {string} name */
-export function dotenvValue(text, name) {
-  let count = 0;
-  /** @type {string | null} */
-  let value = null;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line === '' || line.startsWith('#')) continue;
-    const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!m || m[1] !== name) continue;
-    count++;
-    value = unquote(m[2]);
-  }
-  if (count === 0) return { problem: `${name} is not set in the file` };
-  if (count > 1) return { problem: `${name} is set more than once in the file` };
-  if (value === null) return { problem: `${name} has a malformed quoted value` };
-  return { value };
-}
-
-/** @param {string} v @returns {string | null} */
-function unquote(v) {
-  const q = v[0];
-  if (q === '"' || q === "'") {
-    const end = v.indexOf(q, 1);
-    if (end === -1) return null;
-    const rest = v.slice(end + 1).trim();
-    return rest === '' || rest.startsWith('#') ? v.slice(1, end) : null;
-  }
-  const comment = v.search(/\s#/);
-  return (comment === -1 ? v : v.slice(0, comment)).trim();
-}
-
 /**
  * @param {string} file @param {string} name @param {{roots: string[], ids: Map<string, string>}} policy
  * @returns {Promise<{value: Buffer} | {problem: string}>}
@@ -499,8 +477,8 @@ async function readFileSource(file, name, { roots, ids }) {
     }
     if (st.size > MAX_SOURCE_FILE_BYTES) return { problem: 'the file is larger than 1 MiB' };
     content = await readFile(handle);
-    const r = dotenvValue(content.toString('utf8'), name);
-    return 'problem' in r ? r : { value: Buffer.from(/** @type {string} */ (r.value), 'utf8') };
+    const r = envValue(content.toString('utf8'), name, 'the file');
+    return 'problem' in r ? r : { value: Buffer.from(r.value, 'utf8') };
   } catch (err) {
     return { problem: `the file cannot be read (${/** @type {NodeJS.ErrnoException} */ (err).code ?? 'error'})` };
   } finally {
@@ -509,27 +487,27 @@ async function readFileSource(file, name, { roots, ids }) {
   }
 }
 
-async function readStdin() {
-  if (process.stdin.isTTY) return { problem: 'stdin is a terminal; pipe the value in (it is never typed)' };
-  /** @type {Buffer[]} */
-  const chunks = [];
-  let size = 0;
-  for await (const c of process.stdin) {
-    size += c.length;
-    if (size > MAX_STDIN_BYTES) {
-      for (const x of chunks) x.fill(0);
-      c.fill(0);
-      return { problem: 'stdin holds more than 64 KiB' };
-    }
-    chunks.push(c);
-  }
-  const all = Buffer.concat(chunks);
-  for (const x of chunks) x.fill(0);
-  return { value: all };
+/**
+ * stdin as one dotenv document, read and parsed once on first use and shared by every stdin-env
+ * entry of the run.
+ * @returns {() => Promise<{vars: Map<string, string>} | {problem: string}>}
+ */
+function stdinDocument() {
+  /** @type {Promise<{vars: Map<string, string>} | {problem: string}> | null} */
+  let doc = null;
+  return () =>
+    (doc ??= readStdin().then((r) => {
+      if ('problem' in r) return r;
+      const text = r.value.toString('utf8');
+      r.value.fill(0);
+      const parsed = parseEnvDocument(text);
+      return 'problem' in parsed ? { problem: `the dotenv document on stdin: ${parsed.problem}` } : parsed;
+    }));
 }
 
 /**
- * @param {Entry} entry @param {{roots: string[], ids: Map<string, string>}} policy
+ * @typedef {{roots: string[], ids: Map<string, string>, stdinEnv: ReturnType<typeof stdinDocument>}} ReadPolicy
+ * @param {Entry} entry @param {ReadPolicy} policy
  * @returns {Promise<{value: Buffer} | {problem: string}>} the raw value (one trailing newline removed)
  */
 async function readSource(entry, policy) {
@@ -539,6 +517,12 @@ async function readSource(entry, policy) {
   if (s.type === 'stdin') {
     const r = await readStdin();
     return 'value' in r ? { value: trimNewline(r.value) } : r;
+  }
+  if (s.type === 'stdin-env') {
+    const doc = await policy.stdinEnv();
+    if ('problem' in doc) return doc;
+    const value = doc.vars.get(s.var);
+    return value === undefined ? { problem: `${s.var} is not set in the dotenv document on stdin` } : { value: Buffer.from(value, 'utf8') };
   }
   const [command, args] =
     s.type === 'keychain' ? ['security', ['find-generic-password', '-s', s.service, '-a', s.account, '-w']] : ['op', ['read', s.ref]];
@@ -569,18 +553,40 @@ export function valueProblem(entry, value) {
       return parsePasswordHash(text) ? null : 'the value is not a valid scrypt$ hash (use "transform": "scrypt-hash" for a password)';
     case 'secret':
       return /^[A-Za-z0-9+/_-]+={0,2}$/.test(text) && Buffer.from(text, 'base64').length >= 32 ? null : 'ROUTER_SECRET must be at least 32 bytes, base64 or base64url';
-    case 'store-url': {
-      let url;
-      try {
-        url = new URL(text);
-      } catch {
-        return 'the store URL is not a valid URL';
-      }
-      return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash ? null : 'the store URL must be https:// without credentials, query or fragment';
-    }
+    case 'database-url':
+      return databaseUrlProblem(entry.env, text);
     default:
-      return text.length < 8 ? 'the store token is too short' : null;
+      throw new Error(`no value check for ${entry.env}`);
   }
+}
+
+/**
+ * Why a database URL may not be uploaded as `name`, or null: the router's own production rules
+ * (among them a host, user and password in the URL itself), sslmode require or verify-full, and
+ * on Neon the endpoint that matches the name
+ * (DATABASE_URL_POOLED the `-pooler` host, DATABASE_URL the direct one). Never names a part of it.
+ * @param {string} name @param {string} text 1-4096 printable ASCII bytes without whitespace
+ */
+export function databaseUrlProblem(name, text) {
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    return 'the value is not a valid URL';
+  }
+  if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') return 'the database URL must start with postgres:// or postgresql://';
+  const missing = missingUrlPart(url); // the router's production rule
+  if (missing) return `the database URL has no ${missing}`;
+  const sslmode = url.searchParams.get('sslmode');
+  if (sslmode !== 'require' && sslmode !== 'verify-full') return 'the database URL must set sslmode=require or sslmode=verify-full';
+  if (!parseDatabaseUrl(text, { production: true })) return 'the router would refuse this database URL (DESIGN §4: no other ssl* parameter, a valid channel_binding)';
+  const host = urlHost(url).toLowerCase();
+  if (/\.neon\.tech$/.test(host)) {
+    const pooler = host.split('.')[0].endsWith('-pooler');
+    if (name === 'DATABASE_URL_POOLED' && !pooler) return 'DATABASE_URL_POOLED must be the pooled endpoint (a -pooler host)';
+    if (name === 'DATABASE_URL' && pooler) return 'DATABASE_URL must be the direct endpoint (not a -pooler host)';
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------ vercel
@@ -654,7 +660,7 @@ const USAGE = `usage: node scripts/copy-keys-to-vercel.mjs --manifest <path> [--
 Without --check or --yes the plan is printed and nothing is read or transferred.
   --check   read and validate every source; transfer nothing
   --yes     transfer each value to Vercel in manifest order, stopping at the first failure
-See docs/DEPLOY.md and scripts/key-sources.example.json.`;
+See docs/DEPLOY.md, scripts/key-sources.example.json and scripts/database-sources.example.json.`;
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
@@ -704,13 +710,11 @@ function printPlan(m) {
 
 /** @param {Set<string>} names @param {Manifest} m */
 function finalReport(names, m) {
-  const known = [...Object.keys(NAMES), 'KV_REST_API_URL', 'KV_REST_API_TOKEN'];
-  const present = known.filter((n) => names.has(n));
+  const present = Object.keys(NAMES).filter((n) => names.has(n));
   say(`Present in Vercel ${m.environment} (names only): ${present.length ? present.join(', ') : 'none'}`);
-  const pairs = STORE_PAIRS.filter(([u, t]) => names.has(u) && names.has(t));
-  if (pairs.length === 0) say('Store: no complete store pair; protected routes answer 503 until a store is connected (docs/DEPLOY.md).');
-  else if (pairs.length === 2) say('Store: both KV_REST_API_* and UPSTASH_REDIS_REST_* are present; the router uses KV_REST_API_*.');
-  else say(`Store: ${pairs[0].join(' and ')} present.`);
+  if (names.has('DATABASE_URL_POOLED')) say('Store: DATABASE_URL_POOLED is present; the router uses it.');
+  else if (names.has('DATABASE_URL')) say('Store: only DATABASE_URL is present; the router uses it (DATABASE_URL_POOLED, the pooled endpoint, is preferred).');
+  else say('Store: neither DATABASE_URL_POOLED nor DATABASE_URL is present; protected routes answer 503 until one is set (docs/DEPLOY.md).');
   if (bothPasswords(names)) {
     return stop('final check', `ROUTER_PASSWORD_HASH and ROUTER_PASSWORD both exist in ${m.environment}; the router refuses to start with both (503). Remove one with "vercel env rm <NAME> ${m.environment}".`);
   }
@@ -775,7 +779,7 @@ export async function main(argv) {
   }
 
   const roots = prohibitedRoots(home);
-  const policy = { roots, ids: rootIdentities(roots) };
+  const policy = { roots, ids: rootIdentities(roots), stdinEnv: stdinDocument() };
   /** Names that `vercel env add` (without --force) reported as already existing. */
   const confirmed = new Set();
   const n = m.entries.length;

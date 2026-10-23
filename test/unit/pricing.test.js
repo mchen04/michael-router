@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PRICING, SMOKE_MODELS, costOf, modelList, priceEntry } from '../../src/pricing.js';
-import { USAGE_TTL_SECONDS, normalizeUsage, usageCommands } from '../../src/usage.js';
+import { normalizeUsage, recordUsage, usageEntries } from '../../src/usage.js';
 
 const NOW = Date.parse('2026-10-21T12:00:00Z');
 /** @param {Partial<import('../../src/pricing.js').Usage>} u */
@@ -90,25 +90,20 @@ test('normalizeUsage reads OpenAI/OpenRouter usage; malformed counts become 0', 
   assert.equal(normalizeUsage([1]), null);
 });
 
-test('usage recording: one pipeline of HINCRBY <provider>\\t<model>\\t<metric> (non-zero only) + EXPIRE 400 d', () => {
-  const key = 'mr:v1:usage:2026-10-21';
+test('usage recording: one addUsage of the non-zero counters on the UTC day, purging days before the 400 kept', async () => {
   const base = { provider: 'claude', model: 'claude-haiku-5-5', nowMs: NOW };
-  const field = (/** @type {string} */ m) => `claude\tclaude-haiku-5-5\t${m}`;
+  const entry = (/** @type {string} */ metric, /** @type {number} */ value) => ({ provider: 'claude', model: 'claude-haiku-5-5', metric, value });
   const u = usage({ prompt_tokens: 2500, cached_tokens: 2000, cache_write_tokens: 400, completion_tokens: 50 });
-  assert.deepEqual(usageCommands({ ...base, error: false, billable: true, usage: u, usageFinal: true }), [
-    ['HINCRBY', key, field('requests'), 1],
-    ['HINCRBY', key, field('prompt_tokens'), 2500],
-    ['HINCRBY', key, field('completion_tokens'), 50],
-    ['HINCRBY', key, field('cached_tokens'), 2000],
-    ['HINCRBY', key, field('cache_write_tokens'), 400],
-    ['HINCRBY', key, field('cost_nusd'), 105000],
-    ['HINCRBY', key, field('cost_estimated'), 1],
-    ['EXPIRE', key, USAGE_TTL_SECONDS],
+  assert.deepEqual(usageEntries({ ...base, error: false, billable: true, usage: u, usageFinal: true }), [
+    entry('requests', 1),
+    entry('prompt_tokens', 2500),
+    entry('completion_tokens', 50),
+    entry('cached_tokens', 2000),
+    entry('cache_write_tokens', 400),
+    entry('cost_nusd', 105000),
+    entry('cost_estimated', 1),
   ]);
-  const metrics = (/** @type {Parameters<typeof usageCommands>[0]} */ r) =>
-    usageCommands(r)
-      .filter((c) => c[0] === 'HINCRBY')
-      .map((c) => `${String(c[2]).split('\t')[2]}=${c[3]}`);
+  const metrics = (/** @type {Parameters<typeof usageEntries>[0]} */ r) => usageEntries(r).map((e) => `${e.metric}=${e.value}`);
   assert.deepEqual(metrics({ ...base, error: false, billable: true, usage: null, usageFinal: false }), ['requests=1', 'usage_missing=1', 'cost_unknown=1']);
   assert.deepEqual(metrics({ ...base, error: true, billable: false, usage: null, usageFinal: false }), ['requests=1', 'errors=1']);
   assert.deepEqual(
@@ -116,4 +111,12 @@ test('usage recording: one pipeline of HINCRBY <provider>\\t<model>\\t<metric> (
     ['requests=1', 'errors=1', 'prompt_tokens=9', 'cost_unknown=1'],
     'partial usage of a stream cut short: tokens counted, cost unknown',
   );
+  /** @type {unknown[][]} */
+  const calls = [];
+  /** @type {Promise<unknown>[]} */
+  const background = [];
+  const ctx = { now: () => NOW, store: { addUsage: async (/** @type {unknown[]} */ ...args) => void calls.push(args) }, waitUntil: (/** @type {Promise<unknown>} */ p) => background.push(p) };
+  recordUsage(ctx, { provider: 'claude', model: 'claude-haiku-5-5', error: true, billable: false, usage: null, usageFinal: false });
+  await Promise.all(background);
+  assert.deepEqual(calls, [['2026-10-21', [entry('requests', 1), entry('errors', 1)], { retainFromDay: '2025-09-17' }]], '2025-09-17 .. 2026-10-21 is 400 days');
 });

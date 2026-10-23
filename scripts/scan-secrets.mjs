@@ -19,8 +19,11 @@
 //
 // Pattern rules: real-shaped Anthropic keys and OAuth tokens, OpenRouter and Google API keys,
 // complete scrypt$ password hashes (also escaped or URL-encoded), PEM private-key blocks, Upstash
-// REST and Vercel tokens assigned to their variable names, redis:// URL credentials, and absolute
-// home-directory paths (/Users/<name>, /home/<name>).
+// REST and Vercel tokens assigned to their variable names, redis:// URL credentials, Postgres
+// credentials (postgres:// URLs in any case, JSON-escaped or jdbc:, with a password in the user
+// info or a `password` parameter; PGPASSWORD given a value; libpq `host=… password=…` strings;
+// never a `${…}` template placeholder, nor a host under the reserved .test TLD, which never
+// resolves: test fixtures), and absolute home-directory paths (/Users/<name>, /home/<name>).
 // --literals-stdin: also look for exact values read from stdin (one per line, never argv), in
 // their plain, base64, base64url, URL-encoded and JSON-escaped forms.
 //
@@ -45,6 +48,10 @@ const GIT_FLAGS = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.quote
 
 /** @param {string} s */
 const b64len = (s) => Buffer.from(s, 'base64url').length;
+/** A template placeholder such as `${password}`, not a value. @param {string} s */
+const isTemplate = (s) => /^\$\{[^}]*\}$/.test(s);
+/** A host under the reserved .test TLD (RFC 6761: never resolves): a test fixture. @param {string} host */
+const isTestHost = (host) => /\.test$/i.test(host);
 
 /**
  * @typedef {{id: string, re: RegExp, accept?: (m: RegExpExecArray) => boolean}} Rule
@@ -73,6 +80,46 @@ export const RULES = [
   { id: 'vercel-token', re: /(?:VERCEL_(?:OIDC_|ACCESS_)?TOKEN["']?\s*[:=]\s*["']?|--token[= ]["']?)[A-Za-z0-9_.-]{24,}/g },
   // credentials in redis:// and rediss:// URLs (placeholders such as <password> do not match)
   { id: 'redis-url-credentials', re: /\brediss?:\/\/[^\s:@/'"<>]*:[^\s@/'"<>]{8,}@/g },
+  // credentials in postgres:// and postgresql:// URLs (any case, also jdbc:postgresql:// and
+  // JSON-escaped slashes): a password in the user info or in a `password` parameter. Not reported:
+  // a password that is a template placeholder (`${password}`), and a host under the reserved .test
+  // TLD (RFC 6761: never resolves), which marks a test fixture.
+  {
+    id: 'postgres-url-credentials',
+    re: /\bpostgres(?:ql)?:(?:\\*\/){2}[^\s:@/'"<>]*:([^\s@/'"<>]{8,})@([^\s/\\?#'"<>:]*)/gi,
+    accept: (m) => !isTemplate(m[1]) && !isTestHost(m[2]),
+  },
+  {
+    id: 'postgres-url-credentials',
+    re: /\bpostgres(?:ql)?:(?:\\*\/){2}([^\s/\\?#'"<>]*)(?:[/\\][^\s?#'"<>]*)?\?(?:[^\s#'"<>]*?(?:&|;|\\u0026))?password=([^\s&#'"`<>\\]{8,})/gi,
+    accept: (m) => !isTemplate(m[2]) && !isTestHost(m[1].replace(/^.*@/, '').replace(/:\d*$/, '')),
+  },
+  // PGPASSWORD given a value: `PGPASSWORD=…` (shell, dotenv), a quoted value after `=` or `:`
+  // (code, JSON, YAML), or an unquoted YAML value `PGPASSWORD: …` with a digit in it (a bare
+  // identifier there is code: `{PGPASSWORD: password}`). Not reported: shell and template
+  // references (`$NAME`, `${…}`, `$(…)`, `%NAME%`) and <placeholders>.
+  {
+    id: 'pgpassword-value',
+    re: /\bPGPASSWORD(?:=["'`]?([^\s"'`<>]{8,})|["']?\s*[:=]\s*["'`]([^\s"'`<>]{8,})|["']?:[ \t]+([^\s"'`<>,;)}\]]{8,}))/g,
+    accept: (m) => {
+      const value = m[1] ?? m[2] ?? m[3];
+      return !/^(?:\$|%\w+%)/.test(value) && (m[3] === undefined || /\d/.test(value));
+    },
+  },
+  // libpq keyword/value connection strings: a run of key=value words (no spaces around `=`, as
+  // providers print them) that names both a host and a password, e.g. `host=… user=… password=…`.
+  // Not inside a URL query (`?host=…&password=…`, the rules above). Not reported: a template
+  // password, and a host under .test.
+  {
+    id: 'postgres-keyword-password',
+    re: /(?<![\w.&?=/-])[a-z_]+=(?:'[^'\n]*'|[^\s'"`<>]*)(?:[ \t]+[a-z_]+=(?:'[^'\n]*'|[^\s'"`<>]*))+/g,
+    accept: (m) => {
+      const kv = new Map([...m[0].matchAll(/([a-z_]+)=('[^'\n]*'|\S*)/g)].map(([, k, v]) => [k, v.replace(/^'(.*)'$/, '$1')]));
+      const host = kv.get('host');
+      const password = kv.get('password');
+      return Boolean(host) && password !== undefined && password.length >= 8 && !isTemplate(password) && !isTestHost(/** @type {string} */ (host));
+    },
+  },
   // absolute home directories, with or without a trailing slash (`HOME=/Users/<name>`); not inside
   // URLs or longer paths (the lookbehind), not /Users/Shared, not placeholders like /Users/<name>
   {

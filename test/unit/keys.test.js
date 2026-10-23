@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig } from '../../src/config.js';
 import {
-  KEYS_HASH,
   createKeyResolver,
   decryptProviderKey,
   encryptProviderKey,
@@ -14,6 +13,8 @@ import { makeHarness } from '../helpers/harness.js';
 
 const KEK = Buffer.alloc(32, 9);
 const STORE_KEY = 'sk-ant-fake-SENTINEL-store-claude-0002';
+/** Stored key records by provider. @param {any} store */
+const records = (store) => Object.fromEntries(store.dump().provider_keys.map((/** @type {any} */ k) => [k.provider, k.record]));
 
 test('AES-256-GCM records: {v, iv, ct, tag, updated_at}; AAD binds the provider id', () => {
   const blob = encryptProviderKey(KEK, 'claude', STORE_KEY, '2026-10-21T00:00:00.000Z');
@@ -60,10 +61,10 @@ test('resolver: store override beats env; env fallback; undecryptable record -> 
   const claudeBlob = encryptProviderKey(kek, 'claude', STORE_KEY, '2026-10-21T00:00:00.000Z');
   const geminiBlob = encryptProviderKey(kek, 'gemini', 'AIzaFAKE-SENTINEL-store-gemini-02', '2026-10-21T00:00:00.000Z');
 
-  const envOnly = resolver.resolve([]);
+  const envOnly = resolver.resolve({});
   assert.deepEqual(envOnly.claude, { provider: 'claude', configured: true, source: 'env', updated_at: null, key: ENV_KEYS.ANTHROPIC_API_KEY });
 
-  const stored = resolver.resolve(['claude', claudeBlob]);
+  const stored = resolver.resolve({ claude: claudeBlob });
   assert.equal(stored.claude.source, 'store');
   assert.equal(stored.claude.key, STORE_KEY);
   assert.equal(stored.claude.updated_at, '2026-10-21T00:00:00.000Z');
@@ -71,7 +72,7 @@ test('resolver: store override beats env; env fallback; undecryptable record -> 
 
   /** @type {string[]} */
   const reported = [];
-  const swapped = ['claude', geminiBlob, 'gemini', claudeBlob];
+  const swapped = { claude: geminiBlob, gemini: claudeBlob };
   const r1 = resolver.resolve(swapped, (p) => reported.push(p));
   assert.deepEqual(r1.claude, { provider: 'claude', configured: false, source: 'none', updated_at: null, key: null });
   assert.equal(r1.gemini.configured, false);
@@ -80,7 +81,7 @@ test('resolver: store override beats env; env fallback; undecryptable record -> 
   assert.deepEqual(reported, ['claude', 'gemini'], 'reported once per instance per bad record');
 
   const noEnv = createKeyResolver(loadConfig(await baseEnv()));
-  assert.equal(noEnv.resolve([]).claude.source, 'none');
+  assert.equal(noEnv.resolve({}).claude.source, 'none');
 });
 
 test('keys over the handler: set, list (never values), unset, validation, aliases, unreachable verification', async () => {
@@ -100,9 +101,9 @@ test('keys over the handler: set, list (never values), unset, validation, aliase
   assert.deepEqual(Object.keys(set.json), ['provider', 'configured', 'source', 'updated_at']);
   assert.equal(set.json.source, 'store');
   assert.ok(!set.text.includes(STORE_KEY));
-  const raw = h.store.exec(['HGETALL', KEYS_HASH]);
-  assert.equal(raw[0], 'claude');
-  assert.ok(!raw[1].includes(STORE_KEY));
+  const stored = records(h.store);
+  assert.deepEqual(Object.keys(stored), ['claude']);
+  assert.ok(!stored.claude.includes(STORE_KEY));
 
   const list1 = await h.call('/control/keys', { headers: bearer() });
   assert.equal(list1.json[0].source, 'store');
@@ -112,7 +113,7 @@ test('keys over the handler: set, list (never values), unset, validation, aliase
   assert.equal(unverifiable.status, 502, 'an unreachable provider: verification could not run');
   assert.deepEqual([unverifiable.json.error.code, unverifiable.json.error.type], ['key_verification_unavailable', 'upstream_error']);
   assert.match(unverifiable.json.error.message, /not stored/);
-  assert.deepEqual(h.store.exec(['HGETALL', KEYS_HASH]).filter((/** @type {string} */ _, /** @type {number} */ i) => i % 2 === 0), ['claude'], 'nothing stored for openrouter');
+  assert.deepEqual(Object.keys(records(h.store)), ['claude'], 'nothing stored for openrouter');
 
   const unset = await h.call('/control/keys/claude', { method: 'DELETE', headers: bearer() });
   assert.deepEqual(unset.json, { provider: 'claude', configured: true, source: 'env', updated_at: null, removed: true });
@@ -155,7 +156,7 @@ test('keys over the handler: set, list (never values), unset, validation, aliase
     const d = await h.call(`/control/keys/${alias}`, { method: 'DELETE', headers: bearer() });
     assert.equal(d.json.error.code, 'invalid_provider');
   }
-  assert.equal(h.store.exec(['HGETALL', KEYS_HASH]).length, 0, 'claude was unset; the unverifiable openrouter key was never stored');
+  assert.deepEqual(records(h.store), {}, 'claude was unset; the unverifiable openrouter key was never stored');
 });
 
 test('swapped records over the handler: not configured + gateway event, never a crash', async () => {
@@ -164,8 +165,9 @@ test('swapped records over the handler: not configured + gateway event, never a 
     h.call(`/control/keys/${p}`, { method: 'PUT', headers: bearer(), body: JSON.stringify({ key }) });
   await put('claude', STORE_KEY);
   await put('gemini', 'AIzaFAKE-SENTINEL-store-gemini-02');
-  const [, claudeBlob, , geminiBlob] = h.store.exec(['HGETALL', KEYS_HASH]);
-  h.store.exec(['HSET', KEYS_HASH, 'claude', geminiBlob, 'gemini', claudeBlob]);
+  const { claude: claudeBlob, gemini: geminiBlob } = records(h.store);
+  await h.store.setProviderKey('claude', geminiBlob, '2026-10-21T00:00:00.000Z');
+  await h.store.setProviderKey('gemini', claudeBlob, '2026-10-21T00:00:00.000Z');
   const list = await h.call('/control/keys', { headers: bearer() });
   assert.equal(list.status, 200);
   assert.deepEqual(

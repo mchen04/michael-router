@@ -25,6 +25,7 @@
     "scan": "node scripts/scan-secrets.mjs"
   },
   "dependencies": {
-    "@vercel/functions": "^3.10.2"
+    "@vercel/functions": "^3.10.2",
+    "pg": "^8.23.1"
   }
 }

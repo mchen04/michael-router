@@ -3,9 +3,9 @@
 Michael Router is a password-protected gateway that speaks the OpenAI Chat Completions API and
 forwards each request to Claude (Anthropic Messages API), Gemini or OpenRouter, chosen by the
 request's `model` name. It runs as one Vercel function, keeps its state (stored key overrides,
-usage counters, the wrong-password limiter and recent errors) in an Upstash-REST-compatible
-store, records usage and cost per provider and model, and comes with a command-line client,
-`mrouter`.
+usage counters, the wrong-password limiter and recent errors) in a PostgreSQL database (schema
+`michael_router`), records usage and cost per provider and model, and comes with a command-line
+client, `mrouter`.
 
 ## Routing
 
@@ -22,7 +22,9 @@ The first matching rule wins:
 
 - Node.js 24
 - a Vercel project
-- an Upstash-REST-compatible store (the router refuses protected requests without one)
+- PostgreSQL for the store: Neon in production, PostgreSQL 14 or later (the tests run on 18); the
+  router refuses protected requests without one, and `scripts/migrate.mjs` creates its schema
+  (`docs/DEPLOY.md` step 3)
 - API keys for the providers you use: Anthropic, Gemini, OpenRouter
 
 ## Documentation
@@ -39,11 +41,20 @@ The first matching rule wins:
 ```sh
 npm install
 npm run check              # syntax-check every script and parse the JSON configs
-npm test                   # all tests; fake providers and a fake store, no network or real credentials
+npm test                   # all tests; fake providers and a task-local PostgreSQL, no network or real credentials
 npm run test:unit          # one group: test:unit, test:integration, test:cli or test:scripts
 npm run dev                # the local server; configuration from the environment (docs/API.md §10)
 npm run scan               # secret scan of the working tree and the git history
 ```
+
+The store tests start their own PostgreSQL server per test file on a unix socket and delete it
+afterwards. They need the PostgreSQL server binaries (`initdb`, `postgres`) on `PATH`, or
+`PG_BIN` set to the directory that holds them. The cluster lives in a private `mr-pg-*`
+directory under the system temp directory (`TMPDIR`), and so does its socket. A long `TMPDIR`
+puts the socket path over the unix socket limit (104 bytes); then set `MR_TEST_SOCKET_ROOT` to
+a short directory you own (an absolute path, not under `/tmp`, `/private/tmp` or `/var/tmp`),
+and the socket gets its own private `mr-pg-*` directory there. Without it those tests fail with
+an error that says so. There is no fallback: nothing goes to `/tmp` unless `TMPDIR` points there.
 
 `tools/render-landing.mjs` renders the landing page in `public/` with headless Chromium at
 phone, tablet and desktop sizes in light and dark mode. It writes screenshots and a

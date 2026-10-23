@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { verifyPassword } from '../../src/auth.js';
 import { routePath } from '../../src/handler.js';
+import { LATEST_SCHEMA_VERSION } from '../../src/store/migrations.js';
 import { VERSION } from '../../src/version.js';
 import { PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, baseEnv, bearer } from '../helpers/fixtures.js';
 import { makeHarness } from '../helpers/harness.js';
@@ -92,6 +93,7 @@ test('misconfiguration: 503 server_misconfigured naming the variable only; no au
   const sentinelHash = 'scrypt$garbage-SENTINEL-hash-value';
   const sentinelSecret = 'short-SENTINEL-secret';
   const sentinelPlain = 'plain-SENTINEL-password';
+  const sentinelUrl = 'postgresql://router:db-SENTINEL-password@db.example.test/router';
   const cases = [
     [{ ...env, ROUTER_PASSWORD_HASH: undefined }, 'ROUTER_PASSWORD_HASH/ROUTER_PASSWORD'],
     [{ ...env, ROUTER_PASSWORD: sentinelPlain }, 'ROUTER_PASSWORD_HASH and ROUTER_PASSWORD are both set (set exactly one)'],
@@ -101,7 +103,8 @@ test('misconfiguration: 503 server_misconfigured naming the variable only; no au
     [{ ...env, ROUTER_SECRET: sentinelSecret }, 'ROUTER_SECRET'],
     [{ ...env, VERCEL: '1' }, 'ROUTER_STORE'],
     [{ ...env, NODE_ENV: 'production' }, 'ROUTER_STORE'],
-    [{ ...env, ROUTER_STORE: undefined, VERCEL: '1' }, 'KV_REST_API_URL/KV_REST_API_TOKEN'],
+    [{ ...env, ROUTER_STORE: undefined, VERCEL: '1' }, 'DATABASE_URL_POOLED/DATABASE_URL'],
+    [{ ...env, ROUTER_STORE: undefined, VERCEL: '1', DATABASE_URL: sentinelUrl }, 'DATABASE_URL is missing or invalid'],
   ];
   for (const [e, variable] of cases) {
     const h = await makeHarness({ env: /** @type {any} */ (e), rawEnv: true });
@@ -110,7 +113,7 @@ test('misconfiguration: 503 server_misconfigured naming the variable only; no au
       assert.equal(r.status, 503);
       assert.equal(r.json.error.code, 'server_misconfigured');
       assert.ok(r.json.error.message.includes(/** @type {string} */ (variable)), r.json.error.message);
-      for (const secret of [sentinelHash, sentinelSecret, sentinelPlain, 'SENTINEL-pw', PASSWORD, ROUTER_SECRET, env.ROUTER_PASSWORD_HASH]) {
+      for (const secret of [sentinelHash, sentinelSecret, sentinelPlain, 'SENTINEL-pw', sentinelUrl, 'db-SENTINEL-password', PASSWORD, ROUTER_SECRET, env.ROUTER_PASSWORD_HASH]) {
         assert.ok(!r.text.includes(secret));
       }
     }
@@ -145,6 +148,7 @@ test('successful control responses carry server-timing; x-router-cold and health
   assert.equal(first.json.instance.cold, true);
   assert.equal(first.json.store.kind, 'memory');
   assert.equal(typeof first.json.store.latency_ms, 'number');
+  assert.equal(first.json.store.schema_version, LATEST_SCHEMA_VERSION);
   assert.deepEqual(first.json.providers, { claude: { configured: true }, gemini: { configured: false }, openrouter: { configured: false } });
   assert.ok(!first.text.includes('sk-ant-fake-SENTINEL'));
   const second = await h.call('/control/health', { headers: bearer() });

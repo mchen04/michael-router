@@ -3,6 +3,7 @@
 import { Buffer } from 'node:buffer';
 import { hkdfSync } from 'node:crypto';
 import { parsePasswordHash } from './auth.js';
+import { databaseUrlSecrets, parseDatabaseUrl } from './store/database-url.js';
 import { VERSION, shortCommit } from './version.js';
 
 /** Provider ids are exactly these three; no aliases. */
@@ -24,7 +25,9 @@ const LIMITER_VARS = [
   ['AUTH_BACKOFF_MAX_MS', 'backoffMaxMs', 30000, 1, 600000],
 ];
 
-const STORE_VARS_NAME = 'KV_REST_API_URL/KV_REST_API_TOKEN';
+const STORE_VARS_NAME = 'DATABASE_URL_POOLED/DATABASE_URL';
+/** The pooled URL is preferred: the router opens short-lived connections from many instances. */
+const DATABASE_URL_VARS = ['DATABASE_URL_POOLED', 'DATABASE_URL'];
 const PASSWORD_VARS_NAME = 'ROUTER_PASSWORD_HASH/ROUTER_PASSWORD';
 export const MIN_PASSWORD_LENGTH = 12;
 
@@ -107,24 +110,18 @@ export function loadConfig(env = {}) {
   if (!secret) problems.push('ROUTER_SECRET');
   const derive = (/** @type {string} */ info) => (secret ? Buffer.from(hkdfSync('sha256', secret, Buffer.alloc(0), info, 32)) : null);
 
-  // Store: explicit ROUTER_STORE=memory (never in production) or an Upstash REST pair.
-  /** @type {{kind: 'memory'} | {kind: 'upstash', url: string, token: string} | null} */
+  // Store: explicit ROUTER_STORE=memory (never in production) or a PostgreSQL URL.
+  /** @type {{kind: 'memory'} | {kind: 'postgres', envName: string, connectionString: string, ssl: boolean, channelBinding: boolean} | null} */
   let store = null;
   const storeMode = read(env, 'ROUTER_STORE');
-  const pairs = [
-    ['KV_REST_API_URL', 'KV_REST_API_TOKEN'],
-    ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'],
-  ];
-  const pair = pairs.find(([u, t]) => read(env, u) || read(env, t));
+  const urlVar = DATABASE_URL_VARS.find((name) => read(env, name));
   if (storeMode !== undefined) {
     if (storeMode !== 'memory' || production) problems.push('ROUTER_STORE');
     else store = { kind: 'memory' };
-  } else if (pair) {
-    const url = parseOrigin(read(env, pair[0]), production);
-    const token = read(env, pair[1]);
-    if (!url) problems.push(pair[0]);
-    if (!token) problems.push(pair[1]);
-    if (url && token) store = { kind: 'upstash', url, token };
+  } else if (urlVar) {
+    const db = parseDatabaseUrl(/** @type {string} */ (read(env, urlVar)), { production });
+    if (db) store = { kind: 'postgres', envName: urlVar, ...db };
+    else problems.push(urlVar);
   } else {
     problems.push(STORE_VARS_NAME);
   }
@@ -157,9 +154,7 @@ export function loadConfig(env = {}) {
     passwordHashRaw,
     passwordRaw,
     secretRaw,
-    store && store.kind === 'upstash' ? store.token : undefined,
-    read(env, 'KV_REST_API_TOKEN'),
-    read(env, 'UPSTASH_REDIS_REST_TOKEN'),
+    ...DATABASE_URL_VARS.flatMap((name) => databaseUrlSecrets(read(env, name))),
     ...PROVIDER_IDS.map((id) => providers[id].envKey ?? undefined),
   ].filter((v) => typeof v === 'string');
 

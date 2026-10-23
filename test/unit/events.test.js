@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EVENTS_KEY, appendEvent, buildEvent, listEvents } from '../../src/events.js';
+import { EVENTS_MAX, appendEvent, buildEvent, listEvents } from '../../src/events.js';
 import { failClosed } from '../../src/store/index.js';
 import { createMemoryStore } from '../../src/store/memory.js';
 import { PASSWORD, WRONG_PASSWORD, bearer } from '../helpers/fixtures.js';
@@ -63,11 +63,12 @@ test('gateway errors after authentication are recorded; kind filter and limit', 
   }
 });
 
-test('LTRIM keeps the newest 200 events', async () => {
-  const store = failClosed(createMemoryStore());
+test('the store keeps the newest 200 events', async () => {
+  const raw = createMemoryStore();
+  const store = failClosed(raw);
   for (let i = 0; i < 250; i++) await appendEvent(store, { ts: 't', kind: 'gateway', code: `c${i}`, status: 500, request_id: String(i) });
-  const raw = await store.command(['LRANGE', EVENTS_KEY, 0, -1]);
-  assert.equal(raw.length, 200);
+  assert.equal(EVENTS_MAX, 200);
+  assert.equal(raw.dump().events.length, 200);
   const listed = await listEvents(store, { limit: 200 });
   assert.equal(listed[0].code, 'c249');
   assert.equal(listed[199].code, 'c50');

@@ -1,30 +1,35 @@
-// Provider keys over HTTP against a real dev server and fake Upstash, inspecting the stored records.
+// Provider keys over HTTP against a real dev server on Postgres, inspecting the stored records.
 import assert from 'node:assert/strict';
 import { createDecipheriv, hkdfSync } from 'node:crypto';
 import { after, before, test } from 'node:test';
-import { ENV_KEYS, ROUTER_SECRET, STORE_TOKEN, bearer, passwordHash } from '../helpers/fixtures.js';
-import { startDevServer, startFakeUpstash, upstash } from '../helpers/processes.js';
+import { ENV_KEYS, ROUTER_SECRET, bearer, passwordHash } from '../helpers/fixtures.js';
+import { migrate, startPostgres, withClient } from '../helpers/postgres.js';
+import { startDevServer } from '../helpers/processes.js';
 
 const CLAUDE_KEY = 'sk-ant-fake-SENTINEL-http-claude-0005';
 const GEMINI_KEY = 'AIzaFAKE-SENTINEL-http-gemini-06';
 
 /** @type {Awaited<ReturnType<typeof startDevServer>>} */
 let dev;
-/** @type {Awaited<ReturnType<typeof startFakeUpstash>>} */
-let fake;
+/** @type {Awaited<ReturnType<typeof startPostgres>>} */
+let cluster;
+/** @type {string} */
+let url;
 
 before(async () => {
-  fake = await startFakeUpstash(STORE_TOKEN);
+  cluster = await startPostgres();
+  url = await cluster.createDatabase('keys');
+  await migrate(url);
   dev = await startDevServer({
     ROUTER_PASSWORD_HASH: await passwordHash(),
     ROUTER_SECRET,
-    KV_REST_API_URL: fake.url,
-    KV_REST_API_TOKEN: STORE_TOKEN,
+    DATABASE_URL: url,
     ANTHROPIC_API_KEY: ENV_KEYS.ANTHROPIC_API_KEY,
   });
 });
 after(async () => {
-  await Promise.all([dev?.stop(), fake?.stop()]);
+  await dev?.stop();
+  await cluster?.stop();
 });
 
 /** @param {string} path @param {RequestInit} [init] */
@@ -67,9 +72,11 @@ test('set / list / unset over HTTP; records are AES-256-GCM ciphertext bound to 
   );
   assert.ok(!list.text.includes('SENTINEL'), 'list never returns values');
 
-  const { result: flat } = await upstash(fake.url, STORE_TOKEN, ['HGETALL', 'mr:v1:keys']);
-  const stored = Object.fromEntries([[flat[0], flat[1]], [flat[2], flat[3]]]);
-  assert.ok(!JSON.stringify(flat).includes('SENTINEL'), 'only ciphertext in the store');
+  const { rows } = await withClient(url, (c) => c.query('SELECT provider, record, updated_at FROM michael_router.provider_keys ORDER BY provider'));
+  assert.deepEqual(rows.map((r) => r.provider), ['claude', 'gemini']);
+  assert.ok(rows.every((r) => r.updated_at instanceof Date && r.updated_at.toISOString() === JSON.parse(r.record).updated_at));
+  const stored = Object.fromEntries(rows.map((r) => [r.provider, r.record]));
+  assert.ok(!JSON.stringify(rows).includes('SENTINEL'), 'only ciphertext in the store');
   assert.equal(decrypt('claude', stored.claude), CLAUDE_KEY);
   assert.equal(decrypt('gemini', stored.gemini), GEMINI_KEY);
   assert.throws(() => decrypt('gemini', stored.claude), 'AAD = provider id');
