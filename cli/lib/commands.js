@@ -19,7 +19,7 @@ import { costMarker, costWords, fmtInt, fmtMs, fmtTime, renderPairs, renderTable
 
 export const KEY_ARGUMENT_REFUSAL = 'provider keys are never accepted as arguments; pipe them on stdin or use the prompt';
 export const PASSWORD_ARGUMENT_REFUSAL = 'passwords are never accepted as arguments; pipe them on stdin or use the prompt';
-export const DEFAULT_ASK_MODEL = SMOKE_MODELS.claude;
+export const DEFAULT_ASK_MODEL = SMOKE_MODELS.gemini;
 export const SMOKE_PROMPT = 'Reply with the single word: pong';
 const SMOKE_MAX_TOKENS = 256;
 const CONTROL_TIMEOUT_S = 30;
@@ -612,8 +612,9 @@ export const COMMANDS = {
       'after a blank line (or is the whole prompt without arguments); from a program that leaves\n' +
       'stdin open, pass </dev/null. The reply is written to stdout as it arrives (on a terminal\n' +
       'without control characters); a footer on stderr shows provider, model, tokens, cost (exact,\n' +
-      `estimated or unknown) and latency. Default model: ${DEFAULT_ASK_MODEL}. With --json the assembled\n` +
-      'response JSON is printed instead of the text. Use -- before a prompt that starts with -.',
+      `estimated or unknown) and latency. Default model: ${DEFAULT_ASK_MODEL}; any other with -m.\n` +
+      'With --json the assembled response JSON is printed instead of the text. Use -- before a\n' +
+      'prompt that starts with -.',
     flags: {
       model: { type: 'string', short: 'm', value: 'MODEL', help: `Model name (default ${DEFAULT_ASK_MODEL})` },
       system: { type: 'string', short: 's', value: 'SYSTEM', help: 'System message' },

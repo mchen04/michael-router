@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, test } from 'node:test';
-import { SMOKE_PROMPT } from '../../cli/lib/commands.js';
+import { DEFAULT_ASK_MODEL, SMOKE_PROMPT } from '../../cli/lib/commands.js';
 import { fmtUsd } from '../../cli/lib/output.js';
 import { SMOKE_MODELS } from '../../src/pricing.js';
 import { PTY_SKIP, finishCliSuite, loggedInHome, plain, runCli, runCliPty, startRouterStack, tableRows, waitForJson } from '../helpers/cli.js';
@@ -114,12 +114,21 @@ test('ask streams the reply to stdout as it arrives; the footer follows on stder
   );
 });
 
-test('ask footers: estimated and exact cost; --json output parses; the default model', async () => {
+test('ask footers: estimated and exact cost; --json output parses; the default model is the Gemini smoke model', async () => {
+  const defaultModel = 'gemini-3.5-flash-lite';
   const def = await mr(['ask', 'hi']);
   assert.equal(def.code, 0, def.stderr);
-  assert.equal(def.stdout, 'Hello from the fake Claude API.\n');
+  assert.equal(stack.fake.requests.at(-1)?.body.model, defaultModel);
+  assert.equal(def.stdout, 'Hello from the fake Gemini API.\n');
+  // 1,000 uncached x $0.30 + 200 cached x $0.03 + 300 completion x $2.50 per 1M tokens = $0.001056
+  assert.equal(def.stderr.split(' · ttfb ')[0], `provider gemini · model ${defaultModel} · tokens 1,200 prompt (200 cached) / 300 completion · cost $0.001056 estimated`);
+  assert.equal(DEFAULT_ASK_MODEL, SMOKE_MODELS.gemini, 'the ask default is the Gemini smoke model, not a second literal');
+
+  const claude = await mr(['ask', '-m', 'claude-haiku-5-5', 'hi']);
+  assert.equal(claude.code, 0, claude.stderr);
+  assert.equal(claude.stdout, 'Hello from the fake Claude API.\n');
   assert.equal(stack.fake.requests.at(-1)?.body.model, 'claude-haiku-5-5');
-  assert.match(def.stderr, /^provider claude · model claude-haiku-5-5 · tokens 2,500 prompt \(2,000 cached\) \/ 50 completion · cost \$0\.000105 estimated · /);
+  assert.match(claude.stderr, /^provider claude · model claude-haiku-5-5 · tokens 2,500 prompt \(2,000 cached\) \/ 50 completion · cost \$0\.000105 estimated · /);
 
   const or = await mr(['ask', '-m', 'vendor/fake-ok', 'hi']);
   assert.equal(or.stdout, 'Hello from the fake OpenRouter API.\n');
@@ -131,7 +140,7 @@ test('ask footers: estimated and exact cost; --json output parses; the default m
   assert.deepEqual([s.object, s.choices[0].message.content, s.choices[0].finish_reason, s.usage.prompt_tokens], ['chat.completion', 'Hello from the fake Gemini API.', 'stop', 1200]);
   assert.match(streamed.stderr, /· cost \$0\.000222 estimated ·/);
 
-  const whole = await mr(['ask', '--json', '--no-stream', 'hi']);
+  const whole = await mr(['ask', '--json', '--no-stream', '-m', 'claude-haiku-5-5', 'hi']);
   const w = JSON.parse(whole.stdout);
   assert.deepEqual([w.id, w.choices[0].message.content], ['msg_fake_01', 'Hello from the fake Claude API.']);
 });
