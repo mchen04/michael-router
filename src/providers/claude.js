@@ -260,7 +260,7 @@ export function buildRequest(body, { model, cache }) {
     const effort = Object.hasOwn(EFFORTS, body.reasoning_effort) ? EFFORTS[/** @type {keyof typeof EFFORTS} */ (body.reasoning_effort)] : null;
     if (!effort) throw invalid('invalid_parameter', `reasoning_effort must be one of: ${Object.keys(EFFORTS).join(', ')}.`);
     outputConfig.effort = effort;
-  } else if (!Object.hasOwn(body, 'reasoning_effort') && !nativeOutput && !Object.hasOwn(body.anthropic ?? {}, 'output_config')) {
+  } else if (info?.reasoning_effort !== false && !Object.hasOwn(body, 'reasoning_effort') && !nativeOutput && !Object.hasOwn(body.anthropic ?? {}, 'output_config')) {
     outputConfig.effort = 'medium';
   }
   if (nativeOutput || Object.keys(outputConfig).length) out.output_config = outputConfig;

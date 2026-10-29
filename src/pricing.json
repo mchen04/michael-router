@@ -194,7 +194,7 @@
       ],
       "context_length": 200000,
       "max_output": 64000,
-      "sampling": true
+      "sampling": true, "reasoning_effort": false
     },
     "gemini-4-argon": {
       "provider": "gemini",
