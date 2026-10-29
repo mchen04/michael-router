@@ -565,7 +565,7 @@ test('malformed manifests are refused before anything runs', { skip }, async () 
   /** @type {[string, unknown[], Record<string, unknown>?][]} */
   const cases = [
     ['unknown key "note"', [{ ...stdin, note: 'x' }]],
-    ['"env" must be one of', [{ env: 'OPENAI_API_KEY', source: { type: 'stdin' } }]],
+    ['"env" must be one of', [{ env: 'MISTRAL_API_KEY', source: { type: 'stdin' } }]],
     ['appears more than once', [{ env: 'ANTHROPIC_API_KEY', source: KEYCHAIN }, { env: 'ANTHROPIC_API_KEY', source: { type: 'op', ref: OP_REF } }]],
     ['at most one entry may read stdin', [stdin, { env: 'ANTHROPIC_API_KEY', source: { type: 'stdin' } }]],
     ['cannot share stdin', [stdin, { env: 'DATABASE_URL_POOLED', source: { type: 'stdin-env', var: 'DATABASE_URL_POOLED' } }]],
