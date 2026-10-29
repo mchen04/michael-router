@@ -24,10 +24,9 @@ const VIEWPORTS = [
   { name: 'desktop', width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
 ];
 const PAGES = [
-  { path: '/', name: 'landing', copies: 17, providers: 4 },
+  { path: '/', name: 'landing', copies: 13, providers: 4 },
   { path: '/docs/api.html', name: 'api', copies: 2, providers: 0 },
-  { path: '/docs/cli.html', name: 'cli', copies: 15, providers: 0 },
-  { path: '/docs/providers.html', name: 'providers', copies: 16, providers: 4 },
+  { path: '/docs/providers.html', name: 'providers', copies: 12, providers: 4 },
 ];
 const SCHEMES = /** @type {const} */ (['light', 'dark']);
 
@@ -229,8 +228,9 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
       if (!document.title || !document.querySelector('meta[name="description"]')?.content) problems.push('Missing page metadata');
       if (document.querySelector('style, [style], [onclick], script:not([src])')) problems.push('Inline code violates CSP');
       for (const nav of document.querySelectorAll('header .site-nav, footer .site-nav:first-child')) {
-        if (nav.querySelectorAll('a').length !== 3) problems.push('Missing documentation link');
+        if (nav.querySelectorAll('a').length !== 2) problems.push('Missing documentation link');
       }
+      if (/\/control\/|\bmrouter\b|\bCLI\b/.test(document.body.textContent)) problems.push('Owner-only content is public');
       const ids = [...document.querySelectorAll('[id]')].map((el) => el.id);
       if (new Set(ids).size !== ids.length) problems.push('Duplicate element ID');
       if (document.querySelector('meta[name="robots"]')?.getAttribute('content') !== 'noindex') problems.push('Missing noindex');

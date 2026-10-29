@@ -15,8 +15,8 @@
 </head>
 <body id="top" class="documentation">
 <a class="skip" href="#main">Skip to content</a>
-<header class="wrap masthead"><a class="brand" href="/">Michael Router</a><nav class="site-nav" aria-label="Documentation"><a href="/docs/api.html">API</a><a href="/docs/cli.html">CLI</a><a href="/docs/providers.html">Providers and models</a></nav></header>
-<main id="main"><div class="wrap doc-intro"><h1>Providers and models</h1><p>Choose a model ID. Keep the same base URL, password, and OpenAI Chat Completions format.</p><p>Catalog dated October 29, 2026. Availability can change.</p></div><section class="wrap provider" id="claude" aria-labelledby="claude-title"><div class="provider-info"><h2 id="claude-title">Claude</h2><p>Names that start with <code>claude-</code> route to Claude.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>claude-fable-5-1</code></li><li><code>claude-opus-5-5</code></li><li><code>claude-sonnet-5-5</code></li><li><code>claude-haiku-5-5</code></li></ul><h3>Older models</h3><ul><li><code>claude-opus-5</code></li><li><code>claude-sonnet-5</code></li><li><code>claude-opus-4-8</code></li><li><code>claude-haiku-4-5</code></li></ul></details></div><div class="provider-examples"><figure class="code"><figcaption><span>Claude · curl</span><button type="button" data-copy="claude-curl" aria-label="Copy Claude · curl">Copy</button></figcaption><pre tabindex="0"><code id="claude-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$MROUTER_PASSWORD&quot; |
+<header class="wrap masthead"><a class="brand" href="/">Michael Router</a><nav class="site-nav" aria-label="Documentation"><a href="/docs/api.html">API</a><a href="/docs/providers.html">Providers and models</a></nav></header>
+<main id="main"><div class="wrap doc-intro"><h1>Providers and models</h1><p>Choose a model ID. Keep the same base URL, password, and OpenAI Chat Completions format.</p><p>Set <code>OPENAI_BASE_URL=https://michael-router.vercel.app/v1</code> and <code>OPENAI_API_KEY</code> to your router password before using these examples.</p><p>Catalog dated October 29, 2026. Availability can change.</p></div><section class="wrap provider" id="claude" aria-labelledby="claude-title"><div class="provider-info"><h2 id="claude-title">Claude</h2><p>Names that start with <code>claude-</code> route to Claude.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>claude-fable-5-1</code></li><li><code>claude-opus-5-5</code></li><li><code>claude-sonnet-5-5</code></li><li><code>claude-haiku-5-5</code></li></ul><h3>Older models</h3><ul><li><code>claude-opus-5</code></li><li><code>claude-sonnet-5</code></li><li><code>claude-opus-4-8</code></li><li><code>claude-haiku-4-5</code></li></ul></details></div><div class="provider-examples"><figure class="code"><figcaption><span>Claude · curl</span><button type="button" data-copy="claude-curl" aria-label="Copy Claude · curl">Copy</button></figcaption><pre tabindex="0"><code id="claude-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$OPENAI_API_KEY&quot; |
 curl https://michael-router.vercel.app/v1/chat/completions \
   -H @- \
   -H &#x27;Content-Type: application/json&#x27; \
@@ -24,8 +24,8 @@ curl https://michael-router.vercel.app/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url=&quot;https://michael-router.vercel.app/v1&quot;,
-    api_key=os.environ[&quot;MROUTER_PASSWORD&quot;],
+    base_url=os.environ[&quot;OPENAI_BASE_URL&quot;],
+    api_key=os.environ[&quot;OPENAI_API_KEY&quot;],
 )
 response = client.chat.completions.create(
     model=&quot;claude-haiku-5-5&quot;,
@@ -34,14 +34,14 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)</code></pre></figure></details><details class="example"><summary>JavaScript · OpenAI SDK</summary><figure class="code"><figcaption><span>Claude · JavaScript</span><button type="button" data-copy="claude-javascript" aria-label="Copy Claude · JavaScript">Copy</button></figcaption><pre tabindex="0"><code id="claude-javascript">import OpenAI from &quot;openai&quot;;
 
 const client = new OpenAI({
-  baseURL: &quot;https://michael-router.vercel.app/v1&quot;,
-  apiKey: process.env.MROUTER_PASSWORD,
+  baseURL: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const response = await client.chat.completions.create({
   model: &quot;claude-haiku-5-5&quot;,
   messages: [{ role: &quot;user&quot;, content: &quot;Hello&quot; }],
 });
-console.log(response.choices[0].message.content);</code></pre></figure></details><figure class="code"><figcaption><span>Claude · mrouter</span><button type="button" data-copy="claude-cli" aria-label="Copy Claude · mrouter">Copy</button></figcaption><pre tabindex="0"><code id="claude-cli">mrouter --url https://michael-router.vercel.app/v1 ask -m claude-haiku-5-5 &quot;Hello&quot;</code></pre></figure></div></section><section class="wrap provider" id="openai" aria-labelledby="openai-title"><div class="provider-info"><h2 id="openai-title">OpenAI</h2><p>Names that start with <code>gpt-</code>, or use reasoning IDs such as <code>o3</code> and <code>o4-mini</code>, route to OpenAI.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>gpt-6.1-sol</code></li><li><code>gpt-6.1-terra</code></li><li><code>gpt-6-sol</code></li><li><code>gpt-6-luna</code></li><li><code>gpt-6-astra</code></li><li><code>gpt-5.6-sol</code></li><li><code>gpt-5.6-terra</code></li><li><code>gpt-5.6-luna</code></li><li><code>gpt-5.5</code></li><li><code>gpt-5.4-mini</code></li><li><code>gpt-5.4-nano</code></li><li><code>o3</code></li><li><code>o4-mini</code></li></ul></details></div><div class="provider-examples"><figure class="code"><figcaption><span>OpenAI · curl</span><button type="button" data-copy="openai-curl" aria-label="Copy OpenAI · curl">Copy</button></figcaption><pre tabindex="0"><code id="openai-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$MROUTER_PASSWORD&quot; |
+console.log(response.choices[0].message.content);</code></pre></figure></details></div></section><section class="wrap provider" id="openai" aria-labelledby="openai-title"><div class="provider-info"><h2 id="openai-title">OpenAI</h2><p>Names that start with <code>gpt-</code>, or use reasoning IDs such as <code>o3</code> and <code>o4-mini</code>, route to OpenAI.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>gpt-6.1-sol</code></li><li><code>gpt-6.1-terra</code></li><li><code>gpt-6-sol</code></li><li><code>gpt-6-luna</code></li><li><code>gpt-6-astra</code></li><li><code>gpt-5.6-sol</code></li><li><code>gpt-5.6-terra</code></li><li><code>gpt-5.6-luna</code></li><li><code>gpt-5.5</code></li><li><code>gpt-5.4-mini</code></li><li><code>gpt-5.4-nano</code></li><li><code>o3</code></li><li><code>o4-mini</code></li></ul></details></div><div class="provider-examples"><figure class="code"><figcaption><span>OpenAI · curl</span><button type="button" data-copy="openai-curl" aria-label="Copy OpenAI · curl">Copy</button></figcaption><pre tabindex="0"><code id="openai-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$OPENAI_API_KEY&quot; |
 curl https://michael-router.vercel.app/v1/chat/completions \
   -H @- \
   -H &#x27;Content-Type: application/json&#x27; \
@@ -49,8 +49,8 @@ curl https://michael-router.vercel.app/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url=&quot;https://michael-router.vercel.app/v1&quot;,
-    api_key=os.environ[&quot;MROUTER_PASSWORD&quot;],
+    base_url=os.environ[&quot;OPENAI_BASE_URL&quot;],
+    api_key=os.environ[&quot;OPENAI_API_KEY&quot;],
 )
 response = client.chat.completions.create(
     model=&quot;gpt-6.1-sol&quot;,
@@ -59,14 +59,14 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)</code></pre></figure></details><details class="example"><summary>JavaScript · OpenAI SDK</summary><figure class="code"><figcaption><span>OpenAI · JavaScript</span><button type="button" data-copy="openai-javascript" aria-label="Copy OpenAI · JavaScript">Copy</button></figcaption><pre tabindex="0"><code id="openai-javascript">import OpenAI from &quot;openai&quot;;
 
 const client = new OpenAI({
-  baseURL: &quot;https://michael-router.vercel.app/v1&quot;,
-  apiKey: process.env.MROUTER_PASSWORD,
+  baseURL: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const response = await client.chat.completions.create({
   model: &quot;gpt-6.1-sol&quot;,
   messages: [{ role: &quot;user&quot;, content: &quot;Hello&quot; }],
 });
-console.log(response.choices[0].message.content);</code></pre></figure></details><figure class="code"><figcaption><span>OpenAI · mrouter</span><button type="button" data-copy="openai-cli" aria-label="Copy OpenAI · mrouter">Copy</button></figcaption><pre tabindex="0"><code id="openai-cli">mrouter --url https://michael-router.vercel.app/v1 ask -m gpt-6.1-sol &quot;Hello&quot;</code></pre></figure></div></section><section class="wrap provider" id="gemini" aria-labelledby="gemini-title"><div class="provider-info"><h2 id="gemini-title">Gemini</h2><p>Names that start with <code>gemini-</code> route to Gemini.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>gemini-4-argon</code></li><li><code>gemini-3.8-flash</code></li><li><code>gemini-3.6-flash</code></li><li><code>gemini-3.5-flash-lite</code></li><li><code>gemini-3.1-pro-preview</code></li><li><code>gemini-2.5-pro</code></li><li><code>gemini-2.5-flash</code></li></ul></details></div><div class="provider-examples"><figure class="code"><figcaption><span>Gemini · curl</span><button type="button" data-copy="gemini-curl" aria-label="Copy Gemini · curl">Copy</button></figcaption><pre tabindex="0"><code id="gemini-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$MROUTER_PASSWORD&quot; |
+console.log(response.choices[0].message.content);</code></pre></figure></details></div></section><section class="wrap provider" id="gemini" aria-labelledby="gemini-title"><div class="provider-info"><h2 id="gemini-title">Gemini</h2><p>Names that start with <code>gemini-</code> route to Gemini.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>gemini-4-argon</code></li><li><code>gemini-3.8-flash</code></li><li><code>gemini-3.6-flash</code></li><li><code>gemini-3.5-flash-lite</code></li><li><code>gemini-3.1-pro-preview</code></li><li><code>gemini-2.5-pro</code></li><li><code>gemini-2.5-flash</code></li></ul></details></div><div class="provider-examples"><figure class="code"><figcaption><span>Gemini · curl</span><button type="button" data-copy="gemini-curl" aria-label="Copy Gemini · curl">Copy</button></figcaption><pre tabindex="0"><code id="gemini-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$OPENAI_API_KEY&quot; |
 curl https://michael-router.vercel.app/v1/chat/completions \
   -H @- \
   -H &#x27;Content-Type: application/json&#x27; \
@@ -74,8 +74,8 @@ curl https://michael-router.vercel.app/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url=&quot;https://michael-router.vercel.app/v1&quot;,
-    api_key=os.environ[&quot;MROUTER_PASSWORD&quot;],
+    base_url=os.environ[&quot;OPENAI_BASE_URL&quot;],
+    api_key=os.environ[&quot;OPENAI_API_KEY&quot;],
 )
 response = client.chat.completions.create(
     model=&quot;gemini-3.5-flash-lite&quot;,
@@ -84,14 +84,14 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)</code></pre></figure></details><details class="example"><summary>JavaScript · OpenAI SDK</summary><figure class="code"><figcaption><span>Gemini · JavaScript</span><button type="button" data-copy="gemini-javascript" aria-label="Copy Gemini · JavaScript">Copy</button></figcaption><pre tabindex="0"><code id="gemini-javascript">import OpenAI from &quot;openai&quot;;
 
 const client = new OpenAI({
-  baseURL: &quot;https://michael-router.vercel.app/v1&quot;,
-  apiKey: process.env.MROUTER_PASSWORD,
+  baseURL: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const response = await client.chat.completions.create({
   model: &quot;gemini-3.5-flash-lite&quot;,
   messages: [{ role: &quot;user&quot;, content: &quot;Hello&quot; }],
 });
-console.log(response.choices[0].message.content);</code></pre></figure></details><figure class="code"><figcaption><span>Gemini · mrouter</span><button type="button" data-copy="gemini-cli" aria-label="Copy Gemini · mrouter">Copy</button></figcaption><pre tabindex="0"><code id="gemini-cli">mrouter --url https://michael-router.vercel.app/v1 ask -m gemini-3.5-flash-lite &quot;Hello&quot;</code></pre></figure></div></section><section class="wrap provider" id="openrouter" aria-labelledby="openrouter-title"><div class="provider-info"><h2 id="openrouter-title">OpenRouter</h2><p>IDs with <code>/</code> route to OpenRouter. Use an ID ending in <code>:free</code> or <code>openrouter/free</code>. Paid IDs are refused.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>openrouter/free</code></li><li><code>google/gemma-4-31b-it:free</code></li><li><code>google/gemma-4-26b-a4b-it:free</code></li><li><code>nvidia/nemotron-3-ultra-550b-a55b:free</code></li><li><code>nvidia/nemotron-3.5-super-vl:free</code></li><li><code>nvidia/nemotron-3.5-lightning:free</code></li><li><code>thinkingmachines/inkling:free</code></li><li><code>thinkingmachines/inkling-small:free</code></li><li><code>poolside/laguna-s-2.1:free</code></li><li><code>cohere/north-mini-code:free</code></li></ul></details><p>The free list changes. <a class="text-link" href="https://openrouter.ai/models?max_price=0" rel="noreferrer">Check current free models</a></p></div><div class="provider-examples"><figure class="code"><figcaption><span>OpenRouter · curl</span><button type="button" data-copy="openrouter-curl" aria-label="Copy OpenRouter · curl">Copy</button></figcaption><pre tabindex="0"><code id="openrouter-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$MROUTER_PASSWORD&quot; |
+console.log(response.choices[0].message.content);</code></pre></figure></details></div></section><section class="wrap provider" id="openrouter" aria-labelledby="openrouter-title"><div class="provider-info"><h2 id="openrouter-title">OpenRouter</h2><p>IDs with <code>/</code> route to OpenRouter. Use an ID ending in <code>:free</code> or <code>openrouter/free</code>. Paid IDs are refused.</p><details class="models"><summary>Model IDs <span>as of October 29, 2026</span></summary><ul><li><code>openrouter/free</code></li><li><code>google/gemma-4-31b-it:free</code></li><li><code>google/gemma-4-26b-a4b-it:free</code></li><li><code>nvidia/nemotron-3-ultra-550b-a55b:free</code></li><li><code>nvidia/nemotron-3.5-super-vl:free</code></li><li><code>nvidia/nemotron-3.5-lightning:free</code></li><li><code>thinkingmachines/inkling:free</code></li><li><code>thinkingmachines/inkling-small:free</code></li><li><code>poolside/laguna-s-2.1:free</code></li><li><code>cohere/north-mini-code:free</code></li></ul></details><p>The free list changes. <a class="text-link" href="https://openrouter.ai/models?max_price=0" rel="noreferrer">Check current free models</a></p></div><div class="provider-examples"><figure class="code"><figcaption><span>OpenRouter · curl</span><button type="button" data-copy="openrouter-curl" aria-label="Copy OpenRouter · curl">Copy</button></figcaption><pre tabindex="0"><code id="openrouter-curl">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$OPENAI_API_KEY&quot; |
 curl https://michael-router.vercel.app/v1/chat/completions \
   -H @- \
   -H &#x27;Content-Type: application/json&#x27; \
@@ -99,8 +99,8 @@ curl https://michael-router.vercel.app/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url=&quot;https://michael-router.vercel.app/v1&quot;,
-    api_key=os.environ[&quot;MROUTER_PASSWORD&quot;],
+    base_url=os.environ[&quot;OPENAI_BASE_URL&quot;],
+    api_key=os.environ[&quot;OPENAI_API_KEY&quot;],
 )
 response = client.chat.completions.create(
     model=&quot;openrouter/free&quot;,
@@ -109,15 +109,15 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)</code></pre></figure></details><details class="example"><summary>JavaScript · OpenAI SDK</summary><figure class="code"><figcaption><span>OpenRouter · JavaScript</span><button type="button" data-copy="openrouter-javascript" aria-label="Copy OpenRouter · JavaScript">Copy</button></figcaption><pre tabindex="0"><code id="openrouter-javascript">import OpenAI from &quot;openai&quot;;
 
 const client = new OpenAI({
-  baseURL: &quot;https://michael-router.vercel.app/v1&quot;,
-  apiKey: process.env.MROUTER_PASSWORD,
+  baseURL: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const response = await client.chat.completions.create({
   model: &quot;openrouter/free&quot;,
   messages: [{ role: &quot;user&quot;, content: &quot;Hello&quot; }],
 });
-console.log(response.choices[0].message.content);</code></pre></figure></details><figure class="code"><figcaption><span>OpenRouter · mrouter</span><button type="button" data-copy="openrouter-cli" aria-label="Copy OpenRouter · mrouter">Copy</button></figcaption><pre tabindex="0"><code id="openrouter-cli">mrouter --url https://michael-router.vercel.app/v1 ask -m openrouter/free &quot;Hello&quot;</code></pre></figure></div></section></main>
-<footer class="wrap"><nav class="site-nav" aria-label="Footer documentation"><a href="/docs/api.html">API</a><a href="/docs/cli.html">CLI</a><a href="/docs/providers.html">Providers and models</a></nav><nav class="site-nav" aria-label="Agent resources"><a href="/AGENTS.md">Agent guide</a><a href="/llms.txt">llms.txt</a></nav><p>Private API. Password required for every request.</p></footer>
+console.log(response.choices[0].message.content);</code></pre></figure></details></div></section></main>
+<footer class="wrap"><nav class="site-nav" aria-label="Footer documentation"><a href="/docs/api.html">API</a><a href="/docs/providers.html">Providers and models</a></nav><nav class="site-nav" aria-label="Agent resources"><a href="/AGENTS.md">Agent guide</a><a href="/llms.txt">llms.txt</a></nav><p>Private API. Password required for every request.</p></footer>
 <p class="copy-status" role="status" aria-live="polite"></p>
 </body>
 </html>

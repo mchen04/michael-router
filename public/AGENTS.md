@@ -5,7 +5,8 @@ A successful request returns a chat completion or a complete event stream ending
 
 ## Authentication
 
-Read the router password from `MROUTER_PASSWORD` in the local environment.
+Set `OPENAI_BASE_URL=https://michael-router.vercel.app/v1` and set `OPENAI_API_KEY` to the password you received.
+Read both values from the local environment. Replace `<password>` placeholders locally; never commit a real password.
 Send `Authorization: Bearer <router password>` on every API request.
 Never hard-code, print, commit, or include the password in a command argument.
 Do not send provider keys. The router holds them.
@@ -33,8 +34,8 @@ import os
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://michael-router.vercel.app/v1",
-    api_key=os.environ["MROUTER_PASSWORD"],
+    base_url=os.environ["OPENAI_BASE_URL"],
+    api_key=os.environ["OPENAI_API_KEY"],
 )
 response = client.chat.completions.create(
     model="claude-haiku-5-5",
@@ -47,8 +48,8 @@ print(response.choices[0].message.content)
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "https://michael-router.vercel.app/v1",
-  apiKey: process.env.MROUTER_PASSWORD,
+  baseURL: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const response = await client.chat.completions.create({
   model: "gpt-6.1-sol",
@@ -66,11 +67,11 @@ Do not call `/v1/messages` or send `x-api-key`; this router does not expose the 
 Pass Claude-only options through Python's `extra_body={"anthropic": {...}}` when needed.
 Leave `anthropic.thinking` off in tool loops; signed thinking blocks cannot round-trip through this format.
 
-For adapters that read OpenAI environment variables:
+Set these variables before running any example:
 
 ```sh
 export OPENAI_BASE_URL=https://michael-router.vercel.app/v1
-export OPENAI_API_KEY="${MROUTER_PASSWORD:?Set MROUTER_PASSWORD first}"
+export OPENAI_API_KEY='<password>'
 ```
 
 For Codex or Claude Code, use these variables only with an adapter that sends Chat Completions.
@@ -94,7 +95,7 @@ Read `error.code`, `error.message`, and `x-router-request-id`.
 - 401: Stop. The router password is missing or incorrect. Do not rotate provider keys or retry repeatedly.
 - 402 or 403: Ask the router owner to fix provider billing or access.
 - 404 or 405: Fix the API path or HTTP method.
-- 413: Reduce the body below 4 MiB for chat or 16 KiB for control requests.
+- 413: Reduce the body below 4 MiB for chat.
 - 429: Wait for `Retry-After` before retrying. This includes authentication blocks and provider rate limits.
 - 500: Retry with backoff. Report repeated failures.
 - 502 `provider_auth_failed`: Ask the owner to fix the provider key. Keep the router password unchanged.
@@ -104,19 +105,4 @@ Read `error.code`, `error.message`, and `x-router-request-id`.
 - 503 `store_unavailable`: Retry with backoff.
 - 504 `upstream_timeout`: Check before retrying; the provider may already have billed the request.
 
-## CLI
-
-Use Node.js 24. Set the URL, install the package, and log in at the hidden password prompt.
-
-```sh
-export MROUTER_URL=https://michael-router.vercel.app/v1
-npm install -g https://michael-router.vercel.app/mrouter.tgz
-mrouter login
-mrouter ask -m claude-haiku-5-5 "Hello"
-mrouter models
-```
-
-`MROUTER_PASSWORD` overrides the saved password for later commands.
-For noninteractive requests, use the environment variable; do not automate a hidden login prompt.
-Read [CLI reference](https://michael-router.vercel.app/docs/cli.html) for all commands.
 Read [API reference](https://michael-router.vercel.app/docs/api.html) for the full client contract.
