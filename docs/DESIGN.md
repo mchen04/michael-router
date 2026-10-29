@@ -5,13 +5,14 @@ Status: v1 interfaces.
 ## 1. What it is
 
 A private, password-protected, OpenAI-compatible HTTP gateway deployed on Vercel. A request's
-`model` name selects one of three upstream providers, called with the deployment owner's
+`model` name selects one of four upstream providers, called with the deployment owner's
 provider API keys:
 
 | Provider id  | What it is                          | Upstream and protocol                                           |
 |--------------|-------------------------------------|-----------------------------------------------------------------|
 | `claude`     | Claude API (an Anthropic API key — never a Claude subscription) | native Messages API `POST https://api.anthropic.com/v1/messages` via the adapter in §5.5 |
 | `gemini`     | Gemini API (Google AI Studio key)   | pass-through to `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` (`Authorization: Bearer`) |
+| `openai` | OpenAI | pass-through to `https://api.openai.com/v1/chat/completions` (`Authorization: Bearer`) |
 | `openrouter` | OpenRouter                          | pass-through to `https://openrouter.ai/api/v1/chat/completions` (`Authorization: Bearer`) |
 
 Why Claude is not a pass-through: Anthropic's own OpenAI-compatibility layer is documented as
@@ -131,7 +132,7 @@ src/keys.js              provider key resolution (store override > env), AES-256
 src/routing.js           model name -> provider
 src/proxy.js             forward chat completions, streaming tap, error mapping
 src/providers/claude.js  OpenAI Chat Completions <-> Anthropic Messages adapter (§5.5)
-src/providers/passthrough.js  gemini/openrouter request/response specifics
+src/providers/passthrough.js  gemini/openrouter/openai request/response specifics
 src/sse.js               incremental SSE parser/serializer
 src/usage.js             usage + cost recording and aggregation
 src/pricing.js           price lookup; data in src/pricing.json (dated, sourced)
@@ -171,15 +172,16 @@ gitignored `evidence/` directory or outside the repository; only summaries are c
 |------|----------|---------|
 | `ROUTER_PASSWORD_HASH` or `ROUTER_PASSWORD` | exactly one | The access password exists only as a Vercel sensitive environment variable — never in repository files, history, logs or command arguments. Preferred: `ROUTER_PASSWORD_HASH` = `scrypt$<logN>$<r>$<p>$<salt b64url>$<hash b64url>`, produced from stdin by `mrouter hash-password` or the copy script's `scrypt-hash` transform. Accepted: `ROUTER_PASSWORD` (the password itself, ≥ 12 characters), compared as HMAC digests with `timingSafeEqual`. Both set → 503 `server_misconfigured`. |
 | `ROUTER_SECRET` | yes | ≥32 random bytes, base64/base64url. HKDF-SHA256 derives the key-encryption key (`info="provider-keys-v1"`) and the source-id HMAC key (`info="source-id-v1"`). Never rotated by tooling (rotation orphans stored keys). |
-| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
+| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` `OPENAI_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
 | `DATABASE_URL_POOLED` (preferred) or `DATABASE_URL` | yes, unless `ROUTER_STORE=memory` | PostgreSQL URL of the store (Neon: the `-pooler` endpoint for `DATABASE_URL_POOLED`). In production the URL must name its host, user and password, and `sslmode` must be `require`, `verify-ca` or `verify-full`; `channel_binding` may be `require`, `prefer` or `disable`; any other `ssl*` parameter or `uselibpqcompat` is refused (pg would let it override the TLS settings). A refused URL is reported as its variable's name; neither set → `DATABASE_URL_POOLED/DATABASE_URL`. Both values and the passwords in them are scrubbed from every output (§8). |
 | `ROUTER_STORE=memory` | dev/test only | Refused when `VERCEL` is set or `NODE_ENV=production`. |
-| `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` | no | Upstream origin overrides (tests/bench). |
+| `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` `OPENAI_BASE_URL` | no | Upstream origin overrides (tests/bench). |
 | `TRUST_PROXY_HEADERS` | no | Take the client IP from `x-vercel-forwarded-for`, then `x-real-ip` (Vercel overwrites both; client-supplied values are not forwarded). Implied true when `VERCEL=1`; tests set it to simulate many sources. Otherwise the socket address is used. |
 | `AUTH_MAX_FAILURES` (8) `AUTH_WINDOW_SECONDS` (3600) `AUTH_BLOCK_SECONDS` (3600) `AUTH_MAX_INFLIGHT` (32) `AUTH_BACKOFF_BASE_MS` (250) `AUTH_BACKOFF_MAX_MS` (30000) | no | Limiter tunables; defaults in parentheses. |
 
-A missing required variable makes every protected route return 503 `server_misconfigured`
-(naming the variable, never a value). The landing page keeps working.
+Missing credentials return 401 regardless of configuration.
+Misconfigured servers return a generic 503 unless a working limiter and password check permit detailed diagnostics.
+The landing page keeps working.
 
 ## 5. HTTP surface
 
@@ -258,10 +260,11 @@ committed row, so each request gets a distinct inflight and failure count.
 
 `model` must match `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`, else 400 `invalid_model`. First match:
 
-1. contains `/` → `openrouter`, model forwarded unchanged (`anthropic/claude-…`, `openrouter/auto`)
+1. contains `/` → `openrouter`; require `:free` suffix or exactly `openrouter/free`, otherwise 400 `model_not_allowed`
 2. starts with `claude-` → `claude`
 3. starts with `gemini-` → `gemini`
-4. otherwise → 400 `model_not_routable` (message lists the three rules)
+4. starts with `gpt-` or matches `^o\d` → `openai`
+5. otherwise → 400 `model_not_routable`
 
 Selected provider without a key → 503 `provider_not_configured`.
 
@@ -269,11 +272,14 @@ Selected provider without a key → 503 `provider_not_configured`.
 
 - Body ≤ 4 MiB (Vercel's request limit is 4.5 MB) else 413 `payload_too_large`; must be a JSON
   object else 400 `invalid_json`; `model` required (400 `model_required`).
-- `gemini` and `openrouter` are pass-through: the body is forwarded unchanged except, for
+- `gemini` and `openai` are pass-through: the body is forwarded unchanged except, for
   `gemini` with `stream: true`, `stream_options.include_usage = true` is set (if the client did
   not ask for it, the usage-only chunk — `choices: []` with `usage` — is removed from the client
   stream). OpenRouter already returns usage and `usage.cost` on every response (its
-  `usage.include` flag is deprecated), so nothing is injected for it.
+  `usage.include` flag is deprecated).
+- OpenRouter rejects caller `models`, `route`, `preset` and `plugins`.
+  It forces `models: [model]`, `provider.allow_fallbacks: false`, and zero `provider.max_price` for prompt, completion, request and image.
+  See [OpenRouter provider selection](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), checked 2026-10-29.
 - `claude` goes through the Messages adapter (§5.5).
 - Upstream headers: `content-type: application/json`, the provider auth header, and
   `user-agent: michael-router/<version>`. No attribution headers (`HTTP-Referer`, titles) are
@@ -284,7 +290,7 @@ Selected provider without a key → 503 `provider_not_configured`.
 Responses:
 
 - Success, non-streaming, pass-through: upstream bytes returned unchanged with upstream status;
-  body parsed only to read `usage`. A 200 body that has `error` and no `choices` (OpenRouter
+  body parsed to read `usage` and scrub secrets. A 200 body that has `error` and no `choices` (OpenRouter
   does this) is an error, not a success: mapped per the table below using `error.code` when it
   is an HTTP status, else 502.
 - Success, streaming: `text/event-stream`, status 200, events relayed as they arrive (SSE
@@ -453,7 +459,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 gateway auth/limit, 4 upstream/provider er
 | `status` | URL, whether a password is stored (never the value), config paths |
 | `health` | `/control/health` table |
 | `keys list` | provider, configured, source, updated |
-| `keys set <claude\|gemini\|openrouter> [--no-verify]` | read key hidden/stdin, `PUT /control/keys/:p` |
+| `keys set <claude\|gemini\|openrouter\|openai> [--no-verify]` | read key hidden/stdin, `PUT /control/keys/:p` |
 | `keys unset <provider>` | `DELETE /control/keys/:p` |
 | `models` | `/v1/models` |
 | `ask [-m MODEL] [-s SYSTEM] [--no-stream] [--max-tokens N] [--show-reasoning] [PROMPT…]` | prompt from args, piped stdin, or both (args, blank line, stdin); streams text to stdout; reasoning text to stderr only with `--show-reasoning`; footer (provider, model, tokens, cost + status, latency) to stderr |
@@ -584,3 +590,35 @@ password, its hash, `ROUTER_SECRET`, a database URL with its password or a real 
   Exit 0 clean, 1 findings, 2 usage error. A literal-value run is required before anything is
   pushed to the public remote; whoever holds the values pipes them in from their permitted
   sources.
+
+## Provider fallback and security update (2026-10-29)
+
+Each provider accepts an optional second environment key: its primary variable plus `_2`.
+Stored overrides remain slot 1; slot 2 remains environment-only.
+The provider stays unconfigured without a primary key or stored override.
+No database migration is needed.
+
+Retry one time for HTTP 401, 402, 403 or 429 with explicit billing or exhausted-credit evidence.
+The classifier accepts credit, billing, payment, balance, insufficient-quota, and exhausted, daily or monthly quota errors.
+Generic rate limits, ambiguous quota errors, invalid keys and network failures do not retry.
+Both attempts share one deadline and payload.
+A JSON-only error can trigger fallback before the response starts.
+An event stream never retries.
+Only the final attempt contributes usage; `key_slot_1_requests` or `key_slot_2_requests` identifies its slot.
+
+The shared authentication path covers every provider, key operation, state endpoint and function rewrite.
+Foreign browser origins and cross-site fetches are rejected after authentication.
+No cookie authenticates a request, and no CORS headers grant browser access.
+Password verification and cached credential comparisons use equal-length timing-safe comparisons.
+JSON responses and stream events scrub configured secrets; usage labels are scrubbed before storage.
+See `SECURITY.md` for test evidence and the route matrix.
+
+OpenAI pricing comes from [official API pricing](https://developers.openai.com/api/docs/pricing), fetched 2026-10-29.
+The table records Standard input, output, cached input, 30-minute writes and published long-context tiers.
+Unknown context and output limits remain null.
+Costs remain estimates; regional premiums, other service tiers and 12-hour writes can differ.
+`gpt-6-luna` is the OpenAI smoke model; `openrouter/free` is the OpenRouter smoke model.
+
+Missing credentials return 401 even during misconfiguration.
+Configuration details require both password verification and the shared limiter.
+If either cannot run, a presented credential receives a generic 503 without variable names.

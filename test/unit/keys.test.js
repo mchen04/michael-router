@@ -48,7 +48,7 @@ test('key validation: 8-512 printable non-space ASCII; messages never contain th
 });
 
 test('only the three provider ids are accepted (no aliases)', () => {
-  for (const id of ['claude', 'gemini', 'openrouter']) assert.ok(isProviderId(id));
+  for (const id of ['claude', 'gemini', 'openrouter', 'openai']) assert.ok(isProviderId(id));
   for (const id of ['anthropic', 'Claude', 'CLAUDE', 'google', 'gemini ', 'open-router', 'or', '', 'constructor', '__proto__']) {
     assert.equal(isProviderId(id), false, id);
   }
@@ -94,6 +94,7 @@ test('keys over the handler: set, list (never values), unset, validation, aliase
     { provider: 'claude', configured: true, source: 'env', updated_at: null },
     { provider: 'gemini', configured: false, source: 'none', updated_at: null },
     { provider: 'openrouter', configured: false, source: 'none', updated_at: null },
+    { provider: 'openai', configured: false, source: 'none', updated_at: null },
   ]);
 
   const set = await put('claude', { key: STORE_KEY });
@@ -176,6 +177,7 @@ test('swapped records over the handler: not configured + gateway event, never a 
       ['claude', false, 'none'],
       ['gemini', false, 'none'],
       ['openrouter', false, 'none'],
+      ['openai', false, 'none'],
     ],
   );
   await h.settle();

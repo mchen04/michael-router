@@ -52,8 +52,7 @@ you deploy to. Then check, in the project settings:
 ## 3. Store (required)
 
 **The router fails closed without a store.** Without a database URL, every protected route
-(`/v1/*`, `/control/*`) answers 503 `server_misconfigured`, naming
-`DATABASE_URL_POOLED/DATABASE_URL`. With a URL but an unreachable database, a failed login, or a
+(`/v1/*`, `/control/*`) returns 401 without a credential, or a generic 503 when authentication cannot run. With a URL but an unreachable database, a failed login, or a
 schema that is missing or older than the code needs, it answers 503 `store_unavailable`. Only the
 static landing page keeps working. There is no in-memory fallback in production, because the
 wrong-password limiter must be shared by every instance.
@@ -146,7 +145,7 @@ Check: `vercel env ls production` lists `DATABASE_URL_POOLED`.
 | `ROUTER_PASSWORD_HASH` | `stdin` with `"transform": "scrypt-hash"` | Preferred. The script hashes the password with the server's own function and uploads only the hash. |
 | `ROUTER_PASSWORD` | any source | The simpler alternative: the password itself (at least 12 characters), see `SECURITY.md` §2. |
 | `ROUTER_SECRET` | `generate` with `"onlyIfAbsent": true` | Created once and never overwritten: changing it makes stored key overrides undecryptable and resets source ids. |
-| `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | the designated sources | A provider without a key answers 503 `provider_not_configured`. Keys can also be set later with `mrouter keys set` (stored encrypted in the database, overriding the variable). |
+| `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` | the designated sources | A provider without a key answers 503 `provider_not_configured`. Keys can also be set later with `mrouter keys set` (stored encrypted in the database, overriding the variable). |
 | `DATABASE_URL_POOLED`, `DATABASE_URL` | `stdin-env` | Step 3.2, with its own manifest. |
 
 Set **exactly one** of `ROUTER_PASSWORD_HASH` and `ROUTER_PASSWORD`: with both, every protected
@@ -329,9 +328,8 @@ Anything else (for example `memory`, or a 503) means the deployment does not use
 database: stop.
 
 That authenticated health check is the proof that the database works. A request without a
-password is not: the router answers it 401 `missing_credentials` before any store call (only the
-configuration check, 503 `server_misconfigured`, comes first). So that 401 shows that the
-function is deployed, the rewrites reach it and the configuration parses, but not that the
+password is not: the router answers it 401 `missing_credentials` before any store call.
+That 401 shows that the function is deployed and the rewrites reach it, but not that the
 database is reachable, the login works or the schema is migrated. A wrong password (401
 `invalid_credentials`) does reach the store (a store failure answers 503 first), but it counts a
 failure for your source address, so do not use it as a check.
@@ -436,9 +434,9 @@ The scan prints only locations and rule names, never matched text, and exits 0 w
 
 | Symptom | Cause |
 |---------|-------|
-| every protected route: 503 `server_misconfigured` naming `DATABASE_URL_POOLED/DATABASE_URL` | no database URL (step 3.2), or the deployment predates it: redeploy |
-| 503 `server_misconfigured` naming `DATABASE_URL_POOLED` (or `DATABASE_URL`) | the router refuses that URL (no `sslmode`, an unsupported `ssl*` parameter): fix it at its source, transfer it again (step 3.2), redeploy |
-| 503 `server_misconfigured` naming `ROUTER_PASSWORD_HASH` and `ROUTER_PASSWORD` | both are set: remove one, redeploy |
+| 503 `server_misconfigured` with authentication unavailable | Check the password, secret and database URL in deployment settings; then redeploy |
+| Invalid database URL in deployment settings | Require TLS and supported URL parameters; transfer it again (step 3.2), then redeploy |
+| Both password variables are set | Remove one, then redeploy; diagnostics stay generic until authentication works |
 | 503 `store_unavailable` | the store failed, a connection took longer than 5 s or a statement longer than 1.5 s: database unreachable, deleted or over its limits, password rotated, or the schema missing or older than the code (run the plan, step 3.1) |
 | `migrate.mjs` exits 1, 2 or 3 | see the table in step 3.1 |
 | 503 `provider_not_configured` | no key for the routed provider |
@@ -447,3 +445,30 @@ The scan prints only locations and rule names, never matched text, and exits 0 w
 | Gemini: 404 `upstream_error` (`upstream_status` 404; the code is Google's, e.g. `NOT_FOUND`) although `mrouter keys set gemini` verified the key and `/v1/models` lists the model | Google can withdraw a model from new accounts. The key check only lists the account's models and `/v1/models` comes from `src/pricing.json`, so neither proves the model answers. Test a current model with `mrouter test gemini -m <model>`; by default `mrouter ask` and `mrouter test` use `smoke_models.gemini` in `src/pricing.json` |
 | `STOPPED at …` from the copy script | see step 4.2: stop and pass the line to whoever owns the sources |
 | `STOPPED at DATABASE_URL_POOLED …: … must be the pooled endpoint` | the document's pooled and direct URLs are swapped or the same: fix the source |
+
+## OpenAI and fallback keys
+
+Set `OPENAI_API_KEY` through the existing key-copy manifest, or run `mrouter keys set openai`.
+OpenAI defaults to `https://api.openai.com`; `OPENAI_BASE_URL` overrides the origin.
+All production upstream origins require HTTPS.
+
+The copy script also accepts `ANTHROPIC_API_KEY_2`, `OPENAI_API_KEY_2`, `GEMINI_API_KEY_2` and `OPENROUTER_API_KEY_2`.
+Each optional variable supplies that provider's fallback slot.
+Follow the same plan, check and apply steps used for primary keys.
+Fallback keys remain environment-only; redeploy after changing them.
+The API and CLI show no fallback key values.
+
+Fallback occurs once for explicit billing or exhausted-credit errors on HTTP 401, 402, 403 or 429.
+Generic rate limits and ambiguous quota errors do not retry.
+Streaming requests can retry an HTTP refusal before streaming starts; event streams never retry.
+Usage exposes `key_slot_1_requests` and `key_slot_2_requests` counters.
+
+OpenRouter accepts only `:free` models or `openrouter/free` and forces zero-price provider limits.
+Caller model fallbacks, routing overrides, presets and plugins are rejected before any upstream call.
+The smoke script now includes OpenAI with `gpt-6-luna` and OpenRouter with `openrouter/free`.
+Use `--providers openai` to test only OpenAI after deployment.
+Review `SECURITY.md` for the route authentication and browser-origin checks.
+
+Missing credentials always return 401, including during misconfiguration.
+Configuration variable names appear only after successful authentication with a working limiter store.
+A missing password, secret or store makes authenticated diagnostics unavailable; inspect those settings in the deployment.

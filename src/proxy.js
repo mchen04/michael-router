@@ -10,7 +10,8 @@ import { PROVIDERS } from './config.js';
 import { GatewayError, errorEnvelope, jsonResponse, readBody } from './http.js';
 import { modelList } from './pricing.js';
 import * as claude from './providers/claude.js';
-import { bodyError, createRelay, gemini, openrouter } from './providers/passthrough.js';
+import { bodyError, createRelay, gemini, openrouter, openai } from './providers/passthrough.js';
+import { scrubJson } from './redact.js';
 import { routeModel } from './routing.js';
 import { DONE, createSSEParser, serializeJson } from './sse.js';
 import { recordUsage } from './usage.js';
@@ -24,7 +25,7 @@ const MESSAGE_MAX = 1000;
 const USER_AGENT = `michael-router/${VERSION}`;
 const UPSTREAM_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const RETRY_AFTER = /^(\d{1,9}|[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT)$/;
-const PASSTHROUGH = { gemini, openrouter };
+const PASSTHROUGH = { gemini, openrouter, openai };
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -42,7 +43,7 @@ function parseJson(text) {
 }
 
 /**
- * @typedef {{provider: 'claude' | 'gemini' | 'openrouter', model: string, headers: Record<string, string>}} Target
+ * @typedef {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai', model: string, headers: Record<string, string>}} Target
  * @typedef {{message?: string, code?: string, httpCode?: number, reasons?: string[]}} UpstreamErrorInfo
  */
 
@@ -95,6 +96,12 @@ export function mapUpstreamStatus(provider, status, info = {}) {
   return { status: status >= 400 && status <= 599 ? status : 502, code: null };
 }
 
+export function retryableBilling(status, info) {
+  if (![401, 402, 403, 429].includes(status)) return false;
+  const text = [info.code, info.message, ...(info.reasons ?? [])].join(' ');
+  return /insufficient_quota|credit|billing|payment|balance|quota.{0,60}(?:exhaust|daily|monthly|per.day)|(?:exhaust|insufficient|daily|monthly).{0,60}quota/i.test(text);
+}
+
 /**
  * Build the upstream request for a routed model.
  * @param {any} ctx
@@ -104,13 +111,11 @@ export function mapUpstreamStatus(provider, status, info = {}) {
  */
 function prepare(ctx, { provider, model }, json, bytes) {
   const baseUrl = ctx.config.providers[provider].baseUrl;
-  const key = ctx.keys[provider].key;
   if (provider === 'claude') {
     const cache = (ctx.request.headers.get('x-router-cache') ?? '').trim().toLowerCase() !== 'off';
     const r = claude.buildRequest(json, { model, cache });
     return {
       url: `${baseUrl}/v1/messages`,
-      auth: claude.authHeaders(key),
       payload: JSON.stringify(r.body),
       stream: r.stream,
       dropped: r.dropped,
@@ -120,7 +125,7 @@ function prepare(ctx, { provider, model }, json, bytes) {
   }
   const p = PASSTHROUGH[provider];
   const r = p.prepare(json, bytes);
-  return { url: baseUrl + p.chatPath, auth: p.authHeaders(key), payload: r.payload, stream: r.stream, dropped: [], includeUsage: false, stripUsageOnly: r.stripUsageOnly };
+  return { url: baseUrl + p.chatPath, payload: r.payload, stream: r.stream, dropped: [], includeUsage: false, stripUsageOnly: r.stripUsageOnly };
 }
 
 /** POST /v1/chat/completions @param {any} ctx @returns {Promise<Response>} */
@@ -150,43 +155,54 @@ export async function chatCompletions(ctx) {
   };
   const started = performance.now();
   let res;
-  try {
-    res = await fetch(up.url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': USER_AGENT, ...up.auth },
-      body: up.payload,
-      signal: deadline.signal,
-      redirect: 'error',
-    });
-  } catch (err) {
-    return broken(err);
-  } finally {
-    ctx.timings.upstream = performance.now() - started;
-    ctx.log.upstream_ms = round1(ctx.timings.upstream);
-  }
-
-  if (!res.ok) {
-    const text = await readText(res, ERROR_BODY_MAX_BYTES).catch(() => '');
-    deadline.clear();
-    return httpError(ctx, target, res.status, parseUpstreamError(text), res.headers.get('retry-after'));
-  }
-  const eventStream = /^text\/event-stream\b/i.test(res.headers.get('content-type') ?? '');
-  if (up.stream && eventStream && res.body) return relayStream(ctx, target, up, res, deadline, timeoutMs);
-
   let raw;
-  try {
-    raw = new Uint8Array(await res.arrayBuffer()); // bytes, not res.text(): pass-through returns them unchanged
-  } catch (err) {
-    return broken(err);
+  let body;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    ctx.keySlot = attempt + 1;
+    const key = attempt === 0 ? ctx.keys[provider].key : ctx.config.providers[provider].fallbackKey;
+    const auth = provider === 'claude' ? claude.authHeaders(key) : PASSTHROUGH[provider].authHeaders(key);
+    try {
+      res = await fetch(up.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'user-agent': USER_AGENT, ...auth },
+        body: up.payload,
+        signal: deadline.signal,
+        redirect: 'error',
+      });
+    } catch (err) {
+      return broken(err);
+    } finally {
+      ctx.timings.upstream = performance.now() - started;
+      ctx.log.upstream_ms = round1(ctx.timings.upstream);
+    }
+
+    if (!res.ok) {
+      const text = await readText(res, ERROR_BODY_MAX_BYTES).catch(() => '');
+      const info = parseUpstreamError(text);
+      if (attempt === 0 && ctx.config.providers[provider].fallbackKey && retryableBilling(res.status, info) && !deadline.signal.aborted) continue;
+      deadline.clear();
+      return httpError(ctx, target, res.status, info, res.headers.get('retry-after'));
+    }
+    const eventStream = /^text\/event-stream\b/i.test(res.headers.get('content-type') ?? '');
+    if (up.stream && eventStream && res.body) return relayStream(ctx, target, up, res, deadline, timeoutMs);
+
+    try {
+      raw = new Uint8Array(await res.arrayBuffer()); // bytes, not res.text(): pass-through returns them unchanged
+    } catch (err) {
+      return broken(err);
+    }
+    body = parseJson(new TextDecoder().decode(raw));
+    const err = bodyError(body);
+    if (err && !(isObject(body) && (Array.isArray(body.choices) || body.type === 'message'))) {
+      // A 2xx carrying only an error (OpenRouter does this) is an error, mapped by its code.
+      const info = errorInfo(err);
+      if (attempt === 0 && ctx.config.providers[provider].fallbackKey && retryableBilling(info.httpCode, info) && !deadline.signal.aborted) continue;
+      deadline.clear();
+      return httpError(ctx, target, info.httpCode ?? 502, info, null, res.status);
+    }
+    break;
   }
   deadline.clear();
-  const body = parseJson(new TextDecoder().decode(raw));
-  const err = bodyError(body);
-  if (err && !(isObject(body) && (Array.isArray(body.choices) || body.type === 'message'))) {
-    // A 2xx carrying only an error (OpenRouter does this) is an error, mapped by its code.
-    const info = errorInfo(err);
-    return httpError(ctx, target, info.httpCode ?? 502, info, null, res.status);
-  }
   if (up.stream) {
     return upstreamError(ctx, target, { status: 502, code: 'provider_error', message: `${provider} did not return an event stream.`, upstreamStatus: res.status, billable: true });
   }
@@ -196,11 +212,11 @@ export async function chatCompletions(ctx) {
     }
     const out = claude.translateResponse(body, { model, created: Math.floor(ctx.now() / 1000) });
     recordUsage(ctx, { provider, model, error: false, billable: true, usage: out.usage, usageFinal: out.usage !== null });
-    return jsonResponse(res.status, out.body, target.headers);
+    return new Response(scrubJson(JSON.stringify(out.body), ctx.redact), { status: res.status, headers: { 'content-type': 'application/json; charset=utf-8', ...target.headers } });
   }
   const usage = PASSTHROUGH[provider].usage(isObject(body) ? body.usage : null);
   recordUsage(ctx, { provider, model, error: false, billable: true, usage, usageFinal: usage !== null });
-  return new Response(raw, { status: res.status, headers: { 'content-type': res.headers.get('content-type') ?? 'application/json', ...target.headers } });
+  return new Response(scrubJson(new TextDecoder().decode(raw), ctx.redact), { status: res.status, headers: { 'content-type': ctx.redact(res.headers.get('content-type') ?? 'application/json'), ...target.headers } });
 }
 
 /**
@@ -294,6 +310,7 @@ function failure(ctx, target, err, deadline, timeoutMs) {
  */
 function upstreamError(ctx, target, { status, code, message, upstreamStatus, headers = {}, billable }) {
   const scrubbed = truncate(ctx.redact(message));
+  code = ctx.redact(code);
   ctx.error = { status, code, recorded: true };
   ctx.events.record({ kind: 'upstream', code, status, upstream_status: upstreamStatus, provider: target.provider, model: target.model });
   recordUsage(ctx, { provider: target.provider, model: target.model, error: true, billable, usage: null, usageFinal: false });
@@ -350,6 +367,7 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
   };
   /** @param {string} code @param {string} message */
   const errorChunk = (code, message) => {
+    code = ctx.redact(code);
     const scrubbed = truncate(ctx.redact(message));
     return { text: serializeJson(errorEnvelope({ message: scrubbed, code, type: 'upstream_error', provider })), code, message: scrubbed };
   };
@@ -384,7 +402,7 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
             let out = '';
             for (const item of done ? parser.end() : parser.push(value)) {
               const step = tap.onItem(item);
-              if (step.out) out += step.out;
+              if (step.out) out += step.out.split('\n').map((line) => line.startsWith('data: ') ? `data: ${scrubJson(line.slice(6), ctx.redact)}` : ctx.redact(line)).join('\n');
               if (step.error) {
                 // Normalized and scrubbed; anything after it (including a [DONE]) is dropped.
                 const info = errorInfo(step.error);
@@ -425,7 +443,7 @@ export function listModels(ctx) {
  * Verify a key against the provider's model-list endpoint (no token spend): `true` on 2xx, `false`
  * when the provider refused the key (a 4xx other than 408/429), `null` when it could not judge it
  * (408, 429, 5xx). Network failures throw (the caller treats them as `null`).
- * @param {'claude' | 'gemini' | 'openrouter'} provider
+ * @param {'claude' | 'gemini' | 'openrouter' | 'openai'} provider
  * @param {string} key
  * @param {any} ctx
  * @returns {Promise<{verified: boolean | null, upstream_status: number}>}

@@ -130,7 +130,7 @@ request got a 429, and that the correct password is then refused with `source_bl
 - **Misconfiguration** — a missing or malformed `ROUTER_PASSWORD_HASH` / `ROUTER_PASSWORD` (or
   both set, or a password shorter than 12 characters), `ROUTER_SECRET` (< 32 bytes), store
   variables, limiter tunables, provider env keys or base-URL overrides — makes every protected
-  route answer 503 `server_misconfigured`, naming the variables, never their values. The static
+  route fail closed. Missing credentials return 401; configuration details require a verified password and working limiter. The static
   landing page keeps working.
 - `ROUTER_STORE=memory` is refused when `VERCEL` is set or `NODE_ENV=production`. There is no
   silent fallback to the in-process store anywhere: without `ROUTER_STORE=memory` or a database
@@ -495,3 +495,70 @@ events are trimmed to the newest 200 on every append, a source's limiter row is 
 nothing in it is active (or swept with other dead rows), and key records stay until
 `mrouter keys unset`. Deleted rows can remain in the database provider's backups or
 point-in-time history for as long as that provider keeps them.
+
+## 11. Provider and credit audit — 2026-10-29
+
+The audit uses local fake providers and invented keys only.
+`test/integration/providers-security.test.js` checks the route table and its function rewrites.
+
+| Route | Missing password | Wrong password | Repeated wrong password |
+| --- | --- | --- | --- |
+| `POST /v1/chat/completions` | 401 | 401 | 429 |
+| `GET /v1/models` | 401 | 401 | 429 |
+| `GET /control/health` | 401 | 401 | 429 |
+| `GET /control/keys` | 401 | 401 | 429 |
+| `PUT /control/keys/:provider` | 401 | 401 | 429 |
+| `DELETE /control/keys/:provider` | 401 | 401 | 429 |
+| `GET /control/usage` | 401 | 401 | 429 |
+| `GET /control/errors` | 401 | 401 | 429 |
+| `/api/router?__route=…` for each route above | 401 | 401 | 429 |
+
+These checks use a valid configuration and a fresh source for each route.
+The repetition test sets the failure limit to one.
+Missing credentials never reach a provider or key-verification request.
+Unknown protected paths and wrong methods authenticate before returning 404 or 405.
+No password bypass appears in these routes.
+The public landing page contains no provider or account state.
+If authentication cannot run, a presented credential receives only a generic 503.
+
+### Findings and fixes
+
+| Finding | Fix and evidence |
+| --- | --- |
+| Configuration errors exposed variable names before authentication | Return 401 without credentials; verify the password and limiter before naming invalid variables |
+| Paid OpenRouter models and caller-selected alternatives could spend credits | Reject paid names and caller `models`, `route`, `preset` and `plugins`; tests assert zero upstream calls |
+| Caller provider preferences could permit paid routing | Force one free model, disable provider fallback, and cap prompt, completion, request and image prices at zero |
+| A provider key inside a requested model could enter usage records or reflected responses | Scrub usage labels, JSON string values and keys, gateway messages, upstream codes, content type and stream events |
+| Cross-site requests carrying a valid bearer could reach the handler | Reject foreign or null origins and `Sec-Fetch-Site: cross-site` after authentication; never grant CORS access |
+| Verified-password cache used ordinary string equality | Compare cached fixed-size HMAC digests with `timingSafeEqual` |
+
+The request guard follows [OpenRouter provider selection](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), checked on 2026-10-29.
+The local tests prove the outgoing guard; deployment tests must confirm upstream behavior.
+They do not use real credits.
+
+### Fallback and key handling
+
+Each provider has one optional environment fallback key ending in `_API_KEY_2`.
+The primary key remains the encrypted store override or primary environment key.
+An undecryptable override stays unconfigured; fallback does not bypass that failure.
+Fallback keys undergo the same shape checks and redaction as primary keys.
+The copy script accepts all four fallback names through its existing scoped manifest flow.
+No fallback key is sent to clients or written to usage.
+Usage records only `key_slot_1_requests` or `key_slot_2_requests` for the final attempt.
+
+Retry once for HTTP 401, 402, 403 or 429 with clear billing or exhausted-credit evidence.
+The classifier accepts credit, billing, payment, balance, insufficient-quota, and exhausted, daily or monthly quota errors.
+It rejects plain rate limits, ambiguous quota errors, generic authentication failures, network errors and timeouts.
+The two attempts share a deadline, and the first error body remains internal.
+An event stream never retries, including errors before its first content event.
+
+### Existing controls checked
+
+Password checks use scrypt or fixed-length HMAC digests with timing-safe comparison.
+The shared limiter runs before each password check, including cached credentials.
+Cookies never authenticate requests.
+Production provider origins require HTTPS; credentialed requests refuse redirects.
+Chat bodies are bounded at 4 MiB; key bodies are bounded at 16 KiB.
+The reader checks both declared sizes and streamed byte counts.
+Logs allow known fields only, errors redact secrets, and stored provider keys use authenticated encryption.
+`test/unit/auth.test.js`, `test/unit/handler.test.js`, `test/integration/proxy.test.js` and `test/integration/logging.test.js` cover these controls.

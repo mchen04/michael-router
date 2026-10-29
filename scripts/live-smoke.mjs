@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Smoke run against a deployed Michael Router, after deployment (docs/DEPLOY.md step 6).
 //
-//   node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter]
+//   node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai]
 //                               [--probe-wrong-password]
 //
 // The router password comes from MROUTER_PASSWORD, else from stdin (piped) or a hidden prompt.
@@ -246,6 +246,7 @@ function diagnose(h, origin) {
   }
   if (h.status === 503 && code === 'server_misconfigured') {
     const names = [...new Set(String(h.json?.error?.message ?? '').match(/[A-Z][A-Z0-9_]+(?:\/[A-Z][A-Z0-9_]+)*/g) ?? [])];
+    if (!names.length) return { code, message: 'Authentication unavailable (503 server_misconfigured). Check password, secret and database settings in the deployment.' };
     const store = names.filter((n) => STORE_VARS.test(n));
     const other = names.filter((n) => !STORE_VARS.test(n));
     if (store.length) {
@@ -354,7 +355,7 @@ function parseArgs(argv) {
 }
 
 const USAGE =
-  'usage: node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter] [--probe-wrong-password]\n' +
+  'usage: node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai] [--probe-wrong-password]\n' +
   'The password is read from MROUTER_PASSWORD, else from stdin or a hidden prompt. --probe-wrong-password also sends one wrong\n' +
   'password (expects 401); it counts a failed attempt for this source.';
 

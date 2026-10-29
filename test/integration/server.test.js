@@ -34,11 +34,11 @@ test('landing page and robots.txt are public with the vercel.json security heade
 test('misconfigured server: protected routes 503 naming the variable only; landing page still 200', async () => {
   for (const init of [{}, { headers: bearer() }]) {
     const res = await fetch(`${broken.url}/control/health`, init);
-    assert.equal(res.status, 503);
+    assert.equal(res.status, init.headers ? 503 : 401);
     const text = await res.text();
     const { error } = JSON.parse(text);
-    assert.equal(error.code, 'server_misconfigured');
-    assert.match(error.message, /ROUTER_PASSWORD_HASH/);
+    assert.equal(error.code, init.headers ? 'server_misconfigured' : 'missing_credentials');
+    assert.ok(!error.message.includes('ROUTER_PASSWORD_HASH'));
     assert.ok(!text.includes('SENTINEL'));
   }
   assert.equal((await fetch(`${broken.url}/`)).status, 200);

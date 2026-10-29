@@ -45,7 +45,7 @@ function providerArg(ctx, secretContext) {
   if (secretContext && (extra.length || !(known || SAFE_WORD.test(provider)))) throw usageError(KEY_ARGUMENT_REFUSAL);
   if (!known) throw usageError(`unknown provider${SAFE_WORD.test(provider) ? ` "${provider}"` : ''}; use one of: ${PROVIDER_IDS.join(', ')}`);
   if (extra.length) throw usageError(`${verb} takes exactly one provider`);
-  return /** @type {'claude' | 'gemini' | 'openrouter'} */ (provider);
+  return /** @type {'claude' | 'gemini' | 'openrouter' | 'openai'} */ (provider);
 }
 
 /** @param {Context} ctx @param {string} message */
@@ -582,7 +582,7 @@ export const COMMANDS = {
       list: { summary: 'Provider, configured, source (store/env/none), last update', usage: 'keys list', run: keysList },
       set: {
         summary: 'Store a provider key on the router and verify it',
-        usage: 'keys set <claude|gemini|openrouter> [--no-verify]',
+        usage: 'keys set <claude|gemini|openrouter|openai> [--no-verify]',
         synopsis: 'keys set <provider>',
         description:
           "Reads the key from a hidden prompt, or from stdin when piped. Keys are never accepted as\n" +
@@ -595,7 +595,7 @@ export const COMMANDS = {
       },
       unset: {
         summary: 'Remove a stored key (the environment key applies again)',
-        usage: 'keys unset <claude|gemini|openrouter>',
+        usage: 'keys unset <claude|gemini|openrouter|openai>',
         synopsis: 'keys unset <provider>',
         examples: ['mrouter keys unset openrouter'],
         run: keysUnset,
@@ -627,7 +627,7 @@ export const COMMANDS = {
   },
   test: {
     summary: 'One non-streaming and one streaming request per provider',
-    usage: 'test [claude|gemini|openrouter...] [-m MODEL]',
+    usage: 'test [claude|gemini|openrouter|openai...] [-m MODEL]',
     synopsis: 'test [provider...]',
     description:
       'Without providers, tests every provider the router has a key for, each with its cheap\n' +

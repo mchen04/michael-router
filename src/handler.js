@@ -136,8 +136,8 @@ export function createHandler(options = {}) {
   const baseRedactor = createRedactor(config.secrets);
   const problems = config.problems;
   const configured = problems.length === 0;
-  const store = !configured ? null : options.store ? failClosed(options.store) : createStore(config.store, { onPool: options.attachDatabasePool });
-  const authenticator = configured
+  const store = !config.store || !config.sourceKey ? null : options.store ? failClosed(options.store) : createStore(config.store, { onPool: options.attachDatabasePool });
+  const authenticator = (config.passwordHash || config.password) && !config.passwordConflict
     ? createAuthenticator({ passwordHash: config.passwordHash, password: config.password, verifyPassword: options.verifyPassword })
     : null;
   const keyResolver = createKeyResolver(config);
@@ -205,7 +205,7 @@ export function createHandler(options = {}) {
     ctx.events = createEventRecorder({ store: ctx.store, waitUntil: ctx.waitUntil, scrub: ctx.redact, now, requestId: ctx.requestId });
     ctx.fail = (/** @type {number} */ status, /** @type {string} */ code, /** @type {string} */ message, headers = {}) => {
       ctx.error = { status, code, recorded: false };
-      return jsonResponse(status, errorEnvelope({ message, code }), { 'x-router-error-source': 'gateway', ...headers });
+      return jsonResponse(status, errorEnvelope({ message: ctx.redact(message), code: ctx.redact(code) }), { 'x-router-error-source': 'gateway', ...headers });
     };
     ctx.finishLog = (/** @type {number} */ status) => {
       if (ctx.logged) return;
@@ -236,13 +236,12 @@ export function createHandler(options = {}) {
     const match = path === null ? null : matchRoute(path, ctx.method);
     if (match && 'route' in match) ctx.route = match.route.path;
     if (!isProtected(ctx.url)) return ctx.fail(404, 'not_found', 'Not found.');
-    if (!configured) return ctx.fail(503, 'server_misconfigured', misconfigured);
-
     const presented = bearerCredential(ctx.request);
     if (presented === null) {
       return ctx.fail(401, 'missing_credentials', 'Missing credentials: send "Authorization: Bearer <password>".');
     }
     ctx.redactor = ctx.redactor.with([presented]);
+    if (!authenticator || !store) return ctx.fail(503, 'server_misconfigured', 'Server authentication is unavailable.');
     ctx.source = resolveSource(ctx.request, config, platform.remoteAddress);
     const limiter = createLimiter({ store: ctx.store, limits: config.limiter, now });
 
@@ -283,6 +282,7 @@ export function createHandler(options = {}) {
     // 3. Correct.
     ctx.waitUntil(limiter.release(ctx.source.id));
     ctx.authenticated = true;
+    if (!configured) return ctx.fail(503, 'server_misconfigured', misconfigured);
     ctx.keys = keyResolver.resolve(pre.keys, (provider) =>
       ctx.events.record({
         kind: 'gateway',
@@ -298,6 +298,10 @@ export function createHandler(options = {}) {
         return ctx.fail(405, 'method_not_allowed', 'Method not allowed.', { allow: match.allow.join(', ') });
       }
       return ctx.fail(404, 'not_found', 'Not found.');
+    }
+    const origin = ctx.request.headers.get('origin');
+    if ((origin !== null && origin !== ctx.url.origin) || ctx.request.headers.get('sec-fetch-site') === 'cross-site') {
+      return ctx.fail(403, 'cross_origin_forbidden', 'Cross-origin requests are not allowed.');
     }
     ctx.params = match.params;
     return match.route.handler(ctx);

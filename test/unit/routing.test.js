@@ -5,10 +5,14 @@ import { routeModel } from '../../src/routing.js';
 
 test('routing table: "/" -> openrouter (first match), claude- -> claude, gemini- -> gemini; names forwarded unchanged', () => {
   const cases = [
-    ['anthropic/claude-sonnet-5-5', 'openrouter'],
-    ['openrouter/auto', 'openrouter'],
-    ['claude-x/y', 'openrouter'],
-    ['gemini-2.5-flash:free/variant', 'openrouter'],
+    ['anthropic/claude-sonnet-5-5:free', 'openrouter'],
+    ['openrouter/free', 'openrouter'],
+    ['claude-x/y:free', 'openrouter'],
+    ['gemini-2.5-flash/variant:free', 'openrouter'],
+    ['gpt-6.1-sol', 'openai'],
+    ['o3', 'openai'],
+    ['o4-mini', 'openai'],
+    ['gpt-x/y:free', 'openrouter'],
     ['claude-haiku-5-5', 'claude'],
     ['claude-', 'claude'],
     ['gemini-2.5-flash-lite', 'gemini'],
@@ -29,6 +33,6 @@ test('missing, malformed and unroutable model names are 400s with distinct codes
     rejects(m, 'invalid_model');
   }
   assert.equal(routeModel(`claude-${'a'.repeat(121)}`).model.length, 128, '128 characters is the maximum');
-  for (const m of ['gpt-5', 'Claude-haiku-5-5', 'GEMINI-2.5-pro', 'o3']) rejects(m, 'model_not_routable');
-  assert.throws(() => routeModel('gpt-5'), /contain.*"\/".*"claude-".*"gemini-"/s, 'the message lists the three rules');
+  for (const m of ['other-model', 'Claude-haiku-5-5', 'GEMINI-2.5-pro', 'o-series']) rejects(m, 'model_not_routable');
+  assert.throws(() => routeModel('other-model'), /contain.*"\/".*"claude-".*"gemini-".*"gpt-"/s, 'the message lists the three rules');
 });

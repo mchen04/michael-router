@@ -11,8 +11,9 @@ export const PROVIDERS = Object.freeze({
   claude: Object.freeze({ id: 'claude', keyEnv: 'ANTHROPIC_API_KEY', baseUrlEnv: 'ANTHROPIC_BASE_URL', defaultBaseUrl: 'https://api.anthropic.com' }),
   gemini: Object.freeze({ id: 'gemini', keyEnv: 'GEMINI_API_KEY', baseUrlEnv: 'GEMINI_BASE_URL', defaultBaseUrl: 'https://generativelanguage.googleapis.com' }),
   openrouter: Object.freeze({ id: 'openrouter', keyEnv: 'OPENROUTER_API_KEY', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultBaseUrl: 'https://openrouter.ai' }),
+  openai: Object.freeze({ id: 'openai', keyEnv: 'OPENAI_API_KEY', baseUrlEnv: 'OPENAI_BASE_URL', defaultBaseUrl: 'https://api.openai.com' }),
 });
-/** @type {readonly ('claude' | 'gemini' | 'openrouter')[]} */
+/** @type {readonly ('openai' | 'claude' | 'gemini' | 'openrouter')[]} */
 export const PROVIDER_IDS = Object.freeze(/** @type {any} */ (Object.keys(PROVIDERS)));
 
 /** [env name, config field, default, min, max] */
@@ -136,16 +137,18 @@ export function loadConfig(env = {}) {
     limiter[field] = ok ? n : def;
   }
 
-  /** @type {Record<string, {id: string, keyEnv: string, envKey: string | null, baseUrl: string}>} */
+  /** @type {Record<string, {id: string, keyEnv: string, envKey: string | null, fallbackKey: string | null, baseUrl: string}>} */
   const providers = {};
   for (const id of PROVIDER_IDS) {
     const p = PROVIDERS[id];
     const envKey = read(env, p.keyEnv) ?? null;
     if (envKey !== null && providerKeyProblem(envKey)) problems.push(p.keyEnv);
+    const fallbackKey = read(env, `${p.keyEnv}_2`) ?? null;
+    if (fallbackKey !== null && providerKeyProblem(fallbackKey)) problems.push(`${p.keyEnv}_2`);
     const override = read(env, p.baseUrlEnv);
     const baseUrl = override === undefined ? p.defaultBaseUrl : parseOrigin(override, production);
     if (baseUrl === null) problems.push(p.baseUrlEnv);
-    providers[id] = { id, keyEnv: p.keyEnv, envKey, baseUrl: baseUrl ?? p.defaultBaseUrl };
+    providers[id] = { id, keyEnv: p.keyEnv, envKey, fallbackKey, baseUrl: baseUrl ?? p.defaultBaseUrl };
   }
 
   const trust = read(env, 'TRUST_PROXY_HEADERS');
@@ -155,7 +158,7 @@ export function loadConfig(env = {}) {
     passwordRaw,
     secretRaw,
     ...DATABASE_URL_VARS.flatMap((name) => databaseUrlSecrets(read(env, name))),
-    ...PROVIDER_IDS.map((id) => providers[id].envKey ?? undefined),
+    ...PROVIDER_IDS.flatMap((id) => [providers[id].envKey, providers[id].fallbackKey]),
   ].filter((v) => typeof v === 'string');
 
   return freeze({

@@ -124,7 +124,7 @@ when the stored key was last updated. Key values are never shown.
 mrouter keys list
 ```
 
-### `keys set <claude|gemini|openrouter> [--no-verify]`
+### `keys set <claude|gemini|openrouter|openai> [--no-verify]`
 
 Reads the key from a hidden prompt, or from stdin when piped. It checks the key's shape locally,
 then sends it to the router. Unless `--no-verify` is given, the router first checks the key
@@ -145,7 +145,7 @@ mrouter keys set claude
 mrouter keys set gemini < gemini-key-file
 ```
 
-### `keys unset <claude|gemini|openrouter>`
+### `keys unset <claude|gemini|openrouter|openai>`
 
 Removes the stored key. The provider then uses its environment key, or has no key at all.
 
@@ -192,7 +192,7 @@ mrouter ask "Explain HTTP/2 in one sentence"
 git diff | mrouter ask -m gemini-2.5-flash "Review this diff:"
 ```
 
-### `test [claude|gemini|openrouter...] [-m MODEL]`
+### `test [claude|gemini|openrouter|openai...] [-m MODEL]`
 
 For each provider, sends one non-streaming and one streaming request: the prompt
 `Reply with the single word: pong` with `max_tokens` 256, using the provider's cheap smoke model
@@ -313,3 +313,20 @@ Same as `mrouter <command> --help`.
   sent over `https://`, or `http://` to the local machine.
 - **Stored privately.** The config directory is `0700` and its files are `0600`, written
   atomically, with a warning if the credentials file is readable by others.
+
+## OpenAI, free models and fallback keys
+
+`mrouter keys set openai`, `mrouter keys unset openai` and `mrouter keys list` support OpenAI.
+Key verification uses OpenAI's `/v1/models` endpoint without spending tokens.
+`mrouter test openai` uses `gpt-6-luna` for plain and streaming checks.
+`mrouter ask -m o3` routes to OpenAI.
+
+OpenRouter accepts `openrouter/free` and model names ending in `:free`.
+Paid names return 400 `model_not_allowed` before any upstream call.
+`mrouter test openrouter` uses `openrouter/free`.
+
+Fallback keys are environment-only and use the provider's primary variable name plus `_2`.
+The CLI changes slot 1 only. Unsetting its override restores the primary environment key.
+The router retries explicit billing or exhausted-credit errors once before response bytes start.
+Generic rate limits and ambiguous quota errors do not retry.
+`mrouter usage --json` includes `key_slot_1_requests` and `key_slot_2_requests` when nonzero.

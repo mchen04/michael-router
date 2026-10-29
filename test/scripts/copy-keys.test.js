@@ -15,7 +15,7 @@ import { after, before, test } from 'node:test';
 import { parsePasswordHash, verifyPassword } from '../../src/auth.js';
 import { loadConfig } from '../../src/config.js';
 import { REPO, createFakeTools, makeScratchRoot } from '../helpers/fake-tools.js';
-import { pathProblem, prohibitedRoots } from '../../scripts/copy-keys-to-vercel.mjs';
+import { pathProblem, prohibitedRoots, validateManifest } from '../../scripts/copy-keys-to-vercel.mjs';
 
 const MARKER = 'SENTINEL';
 const VALUES = Object.freeze({
@@ -620,4 +620,11 @@ test('password-variable conflicts and names missing after the transfer fail with
   assert.match(r.stdout, /^STOPPED at final check: not present after the transfer: ROUTER_PASSWORD_HASH, ANTHROPIC_API_KEY$/m);
   calls = await fakes.calls();
   assert.deepEqual(adds(calls), ['ROUTER_PASSWORD_HASH', 'ANTHROPIC_API_KEY']);
+});
+
+test('the manifest accepts OpenAI and all provider fallback names', () => {
+  const names = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY_2', 'GEMINI_API_KEY_2', 'OPENROUTER_API_KEY_2', 'OPENAI_API_KEY_2'];
+  const entries = names.map((env) => ({ env, source: { type: 'stdin-env', var: env } }));
+  const result = validateManifest({ version: 1, environment: 'production', project: PROJECT, entries });
+  assert.deepEqual(result.entries.map((entry) => entry.env), names);
 });

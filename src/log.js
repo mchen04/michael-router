@@ -41,12 +41,12 @@ export function createLogger({ sink = (line) => console.log(line), errorSink = (
     },
     /**
      * @param {unknown} err
-     * @param {{requestId?: string}} [ctx]
+     * @param {{requestId?: string, redact?: (text: unknown) => string}} [ctx]
      */
     exception(err, ctx = {}) {
       const e = /** @type {{name?: unknown}} */ (err ?? {});
       const name = typeof e.name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(e.name) ? e.name : 'Error';
-      errorSink(JSON.stringify({ request_id: ctx.requestId ?? null, exception: name }));
+      errorSink(JSON.stringify({ request_id: ctx.requestId ?? null, exception: ctx.redact ? ctx.redact(name) : scrubPatterns(name) }));
     },
   };
 }

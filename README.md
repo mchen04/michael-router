@@ -1,7 +1,7 @@
 # Michael Router
 
 Michael Router is a password-protected gateway that speaks the OpenAI Chat Completions API and
-forwards each request to Claude (Anthropic Messages API), Gemini or OpenRouter, chosen by the
+forwards each request to Claude (Anthropic Messages API), Gemini, OpenRouter or OpenAI, chosen by the
 request's `model` name. It runs as one Vercel function, keeps its state (stored key overrides,
 usage counters, the wrong-password limiter and recent errors) in a PostgreSQL database (schema
 `michael_router`), records usage and cost per provider and model, and comes with a command-line
@@ -13,10 +13,20 @@ The first matching rule wins:
 
 | `model` | Provider |
 |---------|----------|
-| contains `/` (for example `openrouter/auto`) | OpenRouter, name forwarded unchanged |
+| contains `/` (for example `openrouter/free`) | OpenRouter, name forwarded unchanged |
 | starts with `claude-` | Claude, translated to the Anthropic Messages API |
 | starts with `gemini-` | Gemini, through its OpenAI-compatible endpoint |
+| starts with `gpt-` or matches `^o\d` | OpenAI Chat Completions |
 | anything else | refused: 400 `model_not_routable` |
+
+OpenRouter accepts only names ending in `:free` and `openrouter/free`.
+Paid models, model fallbacks, routing overrides, presets and plugins return 400 before any upstream call.
+The router also sets a zero-price provider guard.
+
+Each provider supports an optional fallback environment key ending in `_API_KEY_2`.
+The router retries billing or exhausted-credit errors once, before sending any response bytes.
+Plain rate limits do not trigger retries.
+Usage records count requests by key slot without storing keys.
 
 ## Requirements
 
@@ -25,7 +35,7 @@ The first matching rule wins:
 - PostgreSQL for the store: Neon in production, PostgreSQL 14 or later (the tests run on 18); the
   router refuses protected requests without one, and `scripts/migrate.mjs` creates its schema
   (`docs/DEPLOY.md` step 3)
-- API keys for the providers you use: Anthropic, Gemini, OpenRouter
+- API keys for the providers you use: Anthropic, Gemini, OpenRouter, OpenAI
 
 ## Documentation
 

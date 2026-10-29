@@ -1,10 +1,11 @@
 {
-  "updated": "2026-10-21",
+  "updated": "2026-10-29",
   "units": "USD per 1M tokens",
   "sources": {
     "claude": "https://platform.claude.com/docs/en/about-claude/pricing (prices as of 2026-10-06)",
     "gemini": "https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-10-21)",
-    "openrouter": "provider-reported usage.cost"
+    "openrouter": "provider-reported usage.cost",
+    "openai": "https://developers.openai.com/api/docs/pricing (Standard prices fetched 2026-10-29)"
   },
   "defaults": {
     "cache_write_multiplier_claude": 1.25,
@@ -13,7 +14,8 @@
   "smoke_models": {
     "claude": "claude-haiku-5-5",
     "gemini": "gemini-3.5-flash-lite",
-    "openrouter": "google/gemini-2.5-flash-lite"
+    "openrouter": "openrouter/free",
+    "openai": "gpt-6-luna"
   },
   "models": {
     "claude-fable-5-1": {
@@ -316,21 +318,207 @@
       "max_output": null,
       "sampling": true
     },
-    "openrouter/auto": {
-      "provider": "openrouter",
-      "priced": false,
-      "context_length": null,
-      "max_output": null
-    },
     "openrouter/free": {
       "provider": "openrouter",
       "priced": false,
       "context_length": null,
       "max_output": null
     },
-    "google/gemini-2.5-flash-lite": {
-      "provider": "openrouter",
-      "priced": false,
+    "gpt-6.1-sol": {
+      "provider": "openai",
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.1,
+      "cache_write": 2.5,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 4,
+          "output": 15.0,
+          "cache_read": 0.2,
+          "cache_write": 5.0
+        }
+      ]
+    },
+    "gpt-6.1-terra": {
+      "provider": "openai",
+      "input": 1,
+      "output": 5,
+      "cache_read": 0.05,
+      "cache_write": 1.25,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 2,
+          "output": 7.5,
+          "cache_read": 0.1,
+          "cache_write": 2.5
+        }
+      ]
+    },
+    "gpt-6-sol": {
+      "provider": "openai",
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.2,
+      "cache_write": 2.5,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 4,
+          "output": 15.0,
+          "cache_read": 0.4,
+          "cache_write": 5.0
+        }
+      ]
+    },
+    "gpt-6-luna": {
+      "provider": "openai",
+      "input": 0.1,
+      "output": 0.5,
+      "cache_read": 0.01,
+      "cache_write": 0.125,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 0.2,
+          "output": 0.75,
+          "cache_read": 0.02,
+          "cache_write": 0.25
+        }
+      ]
+    },
+    "gpt-6-astra": {
+      "provider": "openai",
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 20,
+          "output": 75.0,
+          "cache_read": 2,
+          "cache_write": 25.0
+        }
+      ]
+    },
+    "gpt-5.6-sol": {
+      "provider": "openai",
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.4,
+      "cache_write": 5,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 8,
+          "output": 30.0,
+          "cache_read": 0.8,
+          "cache_write": 10
+        }
+      ]
+    },
+    "gpt-5.6-terra": {
+      "provider": "openai",
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 2.5,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 4,
+          "output": 18.0,
+          "cache_read": 0.4,
+          "cache_write": 5.0
+        }
+      ]
+    },
+    "gpt-5.6-luna": {
+      "provider": "openai",
+      "input": 0.2,
+      "output": 1.2,
+      "cache_read": 0.02,
+      "cache_write": 0.25,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 0.4,
+          "output": 1.7999999999999998,
+          "cache_read": 0.04,
+          "cache_write": 0.5
+        }
+      ]
+    },
+    "gpt-5.5": {
+      "provider": "openai",
+      "input": 5,
+      "output": 30,
+      "cache_read": 0.5,
+      "cache_write": null,
+      "context_length": null,
+      "max_output": null,
+      "tiers": [
+        {
+          "above_prompt_tokens": 272000,
+          "input": 10,
+          "output": 45.0,
+          "cache_read": 1.0,
+          "cache_write": null
+        }
+      ]
+    },
+    "gpt-5.4-mini": {
+      "provider": "openai",
+      "input": 0.75,
+      "output": 4.5,
+      "cache_read": 0.075,
+      "cache_write": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "gpt-5.4-nano": {
+      "provider": "openai",
+      "input": 0.2,
+      "output": 1.25,
+      "cache_read": 0.02,
+      "cache_write": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "o3": {
+      "provider": "openai",
+      "input": 2,
+      "output": 8,
+      "cache_read": 0.5,
+      "cache_write": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "o4-mini": {
+      "provider": "openai",
+      "input": 1.1,
+      "output": 4.4,
+      "cache_read": 0.275,
+      "cache_write": null,
       "context_length": null,
       "max_output": null
     }

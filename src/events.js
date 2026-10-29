@@ -14,6 +14,8 @@ export const EVENT_MESSAGES = Object.freeze({
   invalid_json: 'The request body is not a JSON object.',
   model_required: 'The request names no model.',
   invalid_model: 'The model name breaks the naming rule.',
+  model_not_allowed: 'OpenRouter accepts only free models without paid extras.',
+  cross_origin_forbidden: 'Cross-origin requests are not allowed.',
   model_not_routable: 'No routing rule matches the model name.',
   payload_too_large: 'The request body is over the size limit.',
   invalid_parameter: 'A request field has the wrong shape or value.',

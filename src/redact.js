@@ -8,6 +8,7 @@ const MIN_VALUE_LENGTH = 4; // shorter "secrets" would mangle ordinary text with
 const PATTERNS = [
   [/\bBearer\s+[^\s"',;]+/gi, `Bearer ${REDACTED}`],
   [/sk-ant-[A-Za-z0-9_-]{4,}/g, REDACTED],
+  [/\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{8,}/g, REDACTED],
   [/sk-or-[A-Za-z0-9_-]{4,}/g, REDACTED],
   [/AIza[0-9A-Za-z_-]{20,}/g, REDACTED],
   [/\b[0-9a-fA-F]{32,}\b/g, REDACTED],
@@ -50,4 +51,22 @@ export function createRedactor(values = []) {
       return scrub(text, list);
     },
   };
+}
+
+export function scrubJson(text, redact) {
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return redact(text); }
+  let changed = false;
+  const scrubValue = (value) => {
+    if (typeof value === 'string') {
+      const safe = redact(value);
+      changed ||= safe !== value;
+      return safe;
+    }
+    if (Array.isArray(value)) return value.map(scrubValue);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [scrubValue(key), scrubValue(child)]));
+    return value;
+  };
+  const safe = scrubValue(parsed);
+  return changed ? JSON.stringify(safe) : text;
 }

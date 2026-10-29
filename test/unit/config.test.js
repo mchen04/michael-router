@@ -13,7 +13,7 @@ test('a complete dev configuration has no problems and is frozen', async () => {
   assert.equal(config.sourceKey?.length, 32);
   assert.notDeepEqual(config.keyEncryptionKey, config.sourceKey);
   assert.ok(Object.isFrozen(config) && Object.isFrozen(config.limiter) && Object.isFrozen(config.providers.claude));
-  assert.deepEqual([...PROVIDER_IDS], ['claude', 'gemini', 'openrouter']);
+  assert.deepEqual([...PROVIDER_IDS], ['claude', 'gemini', 'openrouter', 'openai']);
 });
 
 test('missing or malformed ROUTER_PASSWORD_HASH and ROUTER_SECRET are reported by name', async () => {
@@ -155,4 +155,18 @@ test('proxy-header trust, region and commit', async () => {
   assert.equal(c.region, 'iad1');
   assert.equal(c.commit, 'abcdef0');
   assert.equal(loadConfig(env).commit, null);
+});
+
+test('OpenAI and all fallback environment keys are validated and scrubbed', async () => {
+  const env = await baseEnv();
+  const keys = ['ANTHROPIC_API_KEY_2', 'GEMINI_API_KEY_2', 'OPENROUTER_API_KEY_2', 'OPENAI_API_KEY', 'OPENAI_API_KEY_2'];
+  for (const name of keys) {
+    const key = `fake-SENTINEL-${name}`;
+    const config = loadConfig({ ...env, [name]: key });
+    assert.ok(config.secrets.includes(key));
+    assert.deepEqual(config.problems, []);
+    assert.deepEqual(loadConfig({ ...env, [name]: 'too short' }).problems, [name]);
+  }
+  assert.equal(loadConfig(env).providers.openai.baseUrl, 'https://api.openai.com');
+  assert.equal(loadConfig({ ...env, OPENAI_BASE_URL: 'http://127.0.0.1:1234' }).providers.openai.baseUrl, 'http://127.0.0.1:1234');
 });
