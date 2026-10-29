@@ -72,6 +72,7 @@ function measure() {
   const smallTargets = [];
   let smallestTarget = null;
   for (const el of document.querySelectorAll('a[href], button, input, select, textarea, summary')) {
+    if (!el.getClientRects().length || el.classList.contains('skip')) continue;
     el.scrollIntoView({ block: 'center' });
     const r = el.getBoundingClientRect();
     const [cx, cy] = [r.left + r.width / 2, r.top + r.height / 2];
@@ -109,13 +110,6 @@ function measure() {
     probe.remove();
     return y;
   };
-  const h1 = document.querySelector('h1');
-  const toc = document.querySelector('.toc');
-  const tocNo = document.querySelector('.toc li:last-child .toc-no');
-  const besideTitle = h1 && toc && tocNo && toc.getBoundingClientRect().top < h1.getBoundingClientRect().bottom;
-  const rule = document.querySelector('.route')?.getBoundingClientRect();
-  const links = [...document.querySelectorAll('.toc a')].map((a) => a.getBoundingClientRect());
-  const oneLine = links.length > 1 && links.every((r) => Math.abs(r.top - links[0].top) < 1);
   const smallest = Object.entries(sizes)
     .map(([k, n]) => ({ element: k.slice(0, k.lastIndexOf(' ')), px: parseFloat(k.slice(k.lastIndexOf(' ') + 1)), count: n }))
     .sort((a, b) => a.px - b.px)
@@ -130,9 +124,7 @@ function measure() {
     smallestTapTarget: smallestTarget?.target ?? null,
     minProseTextPx: minProse,
     smallestText: smallest,
-    firstRule: rule ? { top: Math.round(rule.top), bottom: Math.round(rule.bottom), inFirstViewport: rule.bottom <= window.innerHeight } : null,
-    titleNavBaselineDelta: besideTitle ? Math.round((baseline(tocNo) - baseline(h1)) * 10) / 10 : null,
-    navLinkGaps: oneLine ? links.slice(1).map((r, i) => Math.round((r.left - links[i].right) * 10) / 10) : null,
+
     baseUrl: document.querySelector('.facts .url')?.textContent ?? null,
   };
 }
@@ -150,6 +142,7 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
     colorScheme: scheme,
     javaScriptEnabled: javaScript,
     serviceWorkers: 'block',
+    permissions: ['clipboard-read', 'clipboard-write'],
   });
   /** @type {string[]} */
   const consoleErrors = [];
@@ -167,6 +160,12 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
   });
   try {
     const page = await context.newPage();
+    await page.addInitScript(() => {
+      window.landingShift = 0;
+      new PerformanceObserver((entries) => {
+        for (const entry of entries.getEntries()) if (!entry.hadRecentInput) window.landingShift += entry.value;
+      }).observe({ type: 'layout-shift', buffered: true });
+    });
     page.on('console', (/** @type {any} */ msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
@@ -188,6 +187,41 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
     const shots = { firstViewport: `${name}-viewport.png`, full: fullPage ? `${name}-full.png` : null };
     await page.screenshot({ path: path.join(outDir, shots.firstViewport) });
     if (shots.full) await page.screenshot({ path: path.join(outDir, shots.full), fullPage: true });
+    const interactionProblems = [];
+    const pageProblems = await page.evaluate(() => {
+      const problems = [];
+      if (document.querySelectorAll('h1').length !== 1) problems.push('Expected one main heading');
+      if (document.querySelectorAll('[data-copy]').length !== 16) problems.push('Expected sixteen copy examples');
+      if (document.querySelectorAll('.provider').length !== 4) problems.push('Expected four providers');
+      if (document.querySelector('.facts .url')?.textContent !== 'https://michael-router.vercel.app/v1') problems.push('Incorrect base URL');
+      if (document.querySelector('meta[name="robots"]')?.getAttribute('content') !== 'noindex') problems.push('Missing noindex');
+      return problems;
+    });
+    interactionProblems.push(...pageProblems);
+    let copiesChecked = 0;
+    const layoutShift = javaScript ? await page.evaluate(() => window.landingShift) : 0;
+    if (javaScript) {
+      await page.locator('.primary').click();
+      if (new URL(page.url()).hash !== '#quickstart') interactionProblems.push('Primary action misses setup');
+      for (const summary of await page.locator('summary').all()) await summary.click();
+      for (const button of await page.locator('[data-copy]').all()) {
+        const id = await button.getAttribute('data-copy');
+        const expected = await page.locator(`[id="${id}"]`).textContent();
+        await button.click();
+        const actual = await page.evaluate(() => navigator.clipboard.readText());
+        if (actual !== expected) interactionProblems.push(`Copy mismatch: ${id}`);
+        if (await page.locator('.copy-status').textContent() !== 'Example copied.') interactionProblems.push(`Missing feedback: ${id}`);
+        copiesChecked++;
+      }
+      await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Denied'); } } }));
+      await page.locator('[data-copy]').first().click();
+      if (await page.locator('.copy-status').textContent() !== 'Example copied.') interactionProblems.push('Clipboard fallback failed');
+      await page.evaluate(() => { document.execCommand = () => false; });
+      await page.locator('[data-copy]').first().click();
+      if (!(await page.locator('.copy-status').textContent()).startsWith('Copy unavailable.')) interactionProblems.push('Clipboard failure has no guidance');
+      await page.evaluate(() => { document.querySelector('.copy-status').textContent = ''; window.scrollTo(0, 0); });
+      await page.screenshot({ path: path.join(outDir, `${name}-expanded.png`), fullPage: true });
+    }
     const metrics = javaScript ? await page.evaluate(measure) : { baseUrl: await page.locator('.facts .url').textContent() };
     return {
       viewport: vp.name,
@@ -199,6 +233,9 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
       status: response?.status() ?? null,
       png: shots,
       ...metrics,
+      interactionProblems,
+      copiesChecked,
+      layoutShift,
       transferredBytes: resources.reduce((n, r) => n + r.bytes, 0),
       resources: resources.sort((a, b) => a.path.localeCompare(b.path)),
       consoleErrors,
@@ -231,6 +268,8 @@ async function main() {
         ...r.failedRequests.map((e) => `failed request (${r.viewport} ${r.scheme}): ${e}`),
         ...r.externalRequests.map((e) => `external request (${r.viewport} ${r.scheme}): ${e}`),
       ]),
+      ...renders.flatMap((r) => r.interactionProblems.map((p) => `${r.viewport} ${r.scheme}: ${p}`)),
+      ...renders.filter((r) => r.layoutShift > 0.01).map((r) => `Layout shift: ${r.layoutShift}`),
       ...(favicon.ok ? [] : [`favicon status ${favicon.status}`]),
     ];
     const summary = {
@@ -241,9 +280,8 @@ async function main() {
       problems,
       horizontal_overflow: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.horizontalOverflow])),
       transferred_bytes: Math.max(...renders.map((r) => r.transferredBytes)),
-      first_rule_in_first_viewport: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.firstRule?.inFirstViewport ?? null])),
-      title_nav_baseline_delta_px: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.titleNavBaselineDelta])),
-      nav_link_gaps_px: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.navLinkGaps])),
+      copies_checked: renders.reduce((n, r) => n + r.copiesChecked, 0),
+      layout_shift: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.layoutShift])),
       console_errors: renders.reduce((n, r) => n + r.consoleErrors.length, noJs.consoleErrors.length),
       base_url: { with_javascript: renders[0].baseUrl, without_javascript: noJs.baseUrl },
       favicon: { status: favicon.status, content_type: favicon.headers.get('content-type'), bytes: (await favicon.arrayBuffer()).byteLength },
@@ -251,7 +289,7 @@ async function main() {
       no_javascript: noJs,
     };
     await writeFile(path.join(out, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
-    console.log(`rendered ${renders.length * 2 + 1} PNGs to ${out}; ${summary.transferred_bytes} bytes; ${problems.length} problems`);
+    console.log(`rendered ${renders.length * 3 + 1} PNGs to ${out}; ${summary.transferred_bytes} bytes; ${problems.length} problems`);
     for (const p of problems) console.log(`  ${p}`);
     process.exitCode = problems.length ? 1 : 0;
   } finally {
