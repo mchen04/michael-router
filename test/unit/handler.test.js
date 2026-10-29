@@ -88,7 +88,7 @@ test('every handler response: Cache-Control no-store, unique request id, no CORS
   assert.equal(ids.size, requests.length);
 });
 
-test('misconfiguration: 503 server_misconfigured naming the variable only; no auth is attempted', async () => {
+test('misconfiguration: anonymous requests get 401 and configuration details require authentication', async () => {
   const env = await baseEnv();
   const sentinelHash = 'scrypt$garbage-SENTINEL-hash-value';
   const sentinelSecret = 'short-SENTINEL-secret';
@@ -110,9 +110,9 @@ test('misconfiguration: 503 server_misconfigured naming the variable only; no au
     const h = await makeHarness({ env: /** @type {any} */ (e), rawEnv: true });
     for (const init of [{}, { headers: bearer() }]) {
       const r = await h.call('/control/health', init);
-      assert.equal(r.status, 503);
-      assert.equal(r.json.error.code, 'server_misconfigured');
-      assert.ok(r.json.error.message.includes(/** @type {string} */ (variable)), r.json.error.message);
+      assert.equal(r.status, init.headers ? 503 : 401);
+      assert.equal(r.json.error.code, init.headers ? 'server_misconfigured' : 'missing_credentials');
+      if (r.json.error.message !== 'Server authentication is unavailable.') assert.ok(!init.headers || r.json.error.message.includes(/** @type {string} */ (variable)), r.json.error.message);
       for (const secret of [sentinelHash, sentinelSecret, sentinelPlain, 'SENTINEL-pw', sentinelUrl, 'db-SENTINEL-password', PASSWORD, ROUTER_SECRET, env.ROUTER_PASSWORD_HASH]) {
         assert.ok(!r.text.includes(secret));
       }
@@ -149,7 +149,7 @@ test('successful control responses carry server-timing; x-router-cold and health
   assert.equal(first.json.store.kind, 'memory');
   assert.equal(typeof first.json.store.latency_ms, 'number');
   assert.equal(first.json.store.schema_version, LATEST_SCHEMA_VERSION);
-  assert.deepEqual(first.json.providers, { claude: { configured: true }, gemini: { configured: false }, openrouter: { configured: false } });
+  assert.deepEqual(first.json.providers, { claude: { configured: true }, gemini: { configured: false }, openrouter: { configured: false }, openai: { configured: false } });
   assert.ok(!first.text.includes('sk-ant-fake-SENTINEL'));
   const second = await h.call('/control/health', { headers: bearer() });
   assert.equal(second.json.instance.cold, false);
@@ -186,5 +186,5 @@ test('verifyPassword is the real scrypt verifier by default', async () => {
   });
   assert.equal((await h.call('/control/health', { headers: bearer() })).status, 200);
   assert.equal((await h.call('/control/health', { headers: bearer() })).status, 200);
-  assert.equal(calls, 1, 'second request hits the per-instance verified cache');
+  assert.equal(calls, 3, 'the admin result is cached; the nonmatching user credential is checked each time');
 });

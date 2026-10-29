@@ -27,13 +27,15 @@ after(async () => {
 beforeEach(() => fake.reset());
 
 /** @param {string} model @param {AbortSignal} [signal] */
-const stream = (model, signal) =>
-  fetch(`${dev.url}/v1/chat/completions`, {
+const stream = (model, signal) => {
+  if (model.endsWith(':free')) fake.setDefaults({ scenario: 'slow-stream' });
+  return fetch(`${dev.url}/v1/chat/completions`, {
     method: 'POST',
     headers: bearer(),
     body: JSON.stringify({ model, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
     signal,
   });
+};
 /** @param {() => boolean} condition */
 async function until(condition, ms = 3000) {
   const end = Date.now() + ms;
@@ -54,7 +56,7 @@ async function usageRow(model) {
   return row;
 }
 
-for (const model of ['claude-fake-slow-stream', 'gemini-fake-slow-stream', 'vendor/fake-slow-stream']) {
+for (const model of ['claude-fake-slow-stream', 'gemini-fake-slow-stream', 'vendor/fake-slow-stream:free']) {
   test(`${model}: chunks reach the client while the upstream is still sending`, async () => {
     const t0 = Date.now();
     const res = await stream(model);

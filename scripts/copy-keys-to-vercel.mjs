@@ -43,9 +43,16 @@ export const EXIT = Object.freeze({ OK: 0, ERROR: 1, USAGE: 2, STOPPED: 3 });
 
 /** The only variables a manifest may set, and how each value is checked. */
 const NAMES = Object.freeze({
+  OPENAI_API_KEY: 'provider-key',
+  OPENAI_API_KEY_2: 'provider-key',
   ANTHROPIC_API_KEY: 'provider-key',
+  ANTHROPIC_API_KEY_2: 'provider-key',
   GEMINI_API_KEY: 'provider-key',
+  GEMINI_API_KEY_2: 'provider-key',
   OPENROUTER_API_KEY: 'provider-key',
+  OPENROUTER_API_KEY_2: 'provider-key',
+  ROUTER_ADMIN_PASSWORD_HASH: 'password-hash',
+  ROUTER_ADMIN_PASSWORD: 'password',
   ROUTER_PASSWORD_HASH: 'password-hash',
   ROUTER_PASSWORD: 'password',
   ROUTER_SECRET: 'secret',
@@ -282,7 +289,7 @@ export function validateManifest(raw, { home = os.homedir(), environment } = {})
     if (seen.has(o.env)) throw new UsageError(`${where}: ${o.env} appears more than once`);
     seen.add(o.env);
     if (o.transform !== undefined && o.transform !== 'scrypt-hash') throw new UsageError(`${where}: "transform" must be "scrypt-hash"`);
-    if (o.transform === 'scrypt-hash' && o.env !== 'ROUTER_PASSWORD_HASH') throw new UsageError(`${where}: "scrypt-hash" applies to ROUTER_PASSWORD_HASH only`);
+    if (o.transform === 'scrypt-hash' && !['ROUTER_PASSWORD_HASH', 'ROUTER_ADMIN_PASSWORD_HASH'].includes(o.env)) throw new UsageError(`${where}: "scrypt-hash" applies to ROUTER_PASSWORD_HASH or ROUTER_ADMIN_PASSWORD_HASH only`);
     if (o.onlyIfAbsent !== undefined && typeof o.onlyIfAbsent !== 'boolean') throw new UsageError(`${where}: "onlyIfAbsent" must be true or false`);
     const source = parseSource(o.source, where, home, roots);
     if (source.type === 'generate' && (o.env !== 'ROUTER_SECRET' || o.onlyIfAbsent !== true)) {
@@ -294,6 +301,9 @@ export function validateManifest(raw, { home = os.homedir(), environment } = {})
   if (stdinEntries > 1) throw new UsageError('manifest: at most one entry may read stdin');
   if (stdinEntries && entries.some((e) => e.source.type === 'stdin-env')) {
     throw new UsageError('manifest: a "stdin" entry (the raw value) and "stdin-env" entries (a dotenv document) cannot share stdin');
+  }
+  if (seen.has('ROUTER_ADMIN_PASSWORD_HASH') && seen.has('ROUTER_ADMIN_PASSWORD')) {
+    throw new UsageError('manifest: set ROUTER_ADMIN_PASSWORD_HASH or ROUTER_ADMIN_PASSWORD, not both');
   }
   if (seen.has('ROUTER_PASSWORD_HASH') && seen.has('ROUTER_PASSWORD')) {
     throw new UsageError('manifest: set ROUTER_PASSWORD_HASH or ROUTER_PASSWORD, not both (the router refuses to start with both)');
@@ -651,7 +661,7 @@ async function listEnv(project, environment) {
 }
 
 /** @param {Set<string>} names */
-const bothPasswords = (names) => names.has('ROUTER_PASSWORD_HASH') && names.has('ROUTER_PASSWORD');
+const passwordConflict = (names) => ['ROUTER_PASSWORD', 'ROUTER_ADMIN_PASSWORD'].find((name) => names.has(name) && names.has(`${name}_HASH`));
 
 // ------------------------------------------------------------------ main
 
@@ -715,8 +725,9 @@ function finalReport(names, m) {
   if (names.has('DATABASE_URL_POOLED')) say('Store: DATABASE_URL_POOLED is present; the router uses it.');
   else if (names.has('DATABASE_URL')) say('Store: only DATABASE_URL is present; the router uses it (DATABASE_URL_POOLED, the pooled endpoint, is preferred).');
   else say('Store: neither DATABASE_URL_POOLED nor DATABASE_URL is present; protected routes answer 503 until one is set (docs/DEPLOY.md).');
-  if (bothPasswords(names)) {
-    return stop('final check', `ROUTER_PASSWORD_HASH and ROUTER_PASSWORD both exist in ${m.environment}; the router refuses to start with both (503). Remove one with "vercel env rm <NAME> ${m.environment}".`);
+  const conflict = passwordConflict(names);
+  if (conflict) {
+    return stop('final check', `${conflict}_HASH and ${conflict} both exist in ${m.environment}; the router refuses to start with both (503). Remove one with "vercel env rm <NAME> ${m.environment}".`);
   }
   const missing = m.entries.map((e) => e.env).filter((n) => !names.has(n));
   if (missing.length) return stop('final check', `not present after the transfer: ${missing.join(', ')}`);
@@ -771,10 +782,11 @@ export async function main(argv) {
   const existing = /** @type {Set<string>} */ (before.names);
   const sets = new Set(m.entries.map((e) => e.env));
   const after = new Set([...existing, ...sets]);
-  if (bothPasswords(after)) {
-    const mine = ['ROUTER_PASSWORD_HASH', 'ROUTER_PASSWORD'].find((p) => sets.has(p));
-    const other = mine === 'ROUTER_PASSWORD' ? 'ROUTER_PASSWORD_HASH' : 'ROUTER_PASSWORD';
-    const what = mine ? `the manifest sets ${mine} but ${other} already exists in ${m.environment}` : `ROUTER_PASSWORD_HASH and ROUTER_PASSWORD both exist in ${m.environment}`;
+  const conflict = passwordConflict(after);
+  if (conflict) {
+    const mine = [`${conflict}_HASH`, conflict].find((p) => sets.has(p));
+    const other = mine === conflict ? `${conflict}_HASH` : conflict;
+    const what = mine ? `the manifest sets ${mine} but ${other} already exists in ${m.environment}` : `${conflict}_HASH and ${conflict} both exist in ${m.environment}`;
     return stop('pre-check', `${what}; the router refuses to start with both (503). Remove one first with "vercel env rm ${mine ? other : '<NAME>'} ${m.environment}".`);
   }
 

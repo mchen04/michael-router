@@ -78,3 +78,11 @@ test('exception lines carry only the request id and the exception name', () => {
   assert.ok(!lines[0].includes('SENTINEL') && !lines[0].includes('quoted') && !lines[0].includes(PASSWORD));
   assert.deepEqual(b, { request_id: null, exception: 'Error' });
 });
+
+test('exception names are scrubbed with the request secrets', () => {
+  const output = [];
+  const secret = 'customSecretValue';
+  const logger = createLogger({ errorSink: (line) => output.push(line) });
+  logger.exception({ name: secret }, { redact: (text) => String(text).replaceAll(secret, '[redacted]') });
+  assert.equal(JSON.parse(output[0]).exception, '[redacted]');
+});

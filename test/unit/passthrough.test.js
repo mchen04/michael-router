@@ -1,7 +1,7 @@
 // Gemini/OpenRouter pass-through specifics: provider key failures and stream usage finality.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createRelay } from '../../src/providers/passthrough.js';
+import { createRelay, openai } from '../../src/providers/passthrough.js';
 import { mapUpstreamStatus, parseUpstreamError } from '../../src/proxy.js';
 
 test('Gemini key failures: invalid or expired message, or details[].reason API_KEY_INVALID -> 502 provider_auth_failed', () => {
@@ -31,4 +31,17 @@ test('pass-through stream usage is final only after [DONE], on a finish_reason c
   assert.deepEqual(run([chunk({ usage }, 'stop')]), [5, true]);
   assert.deepEqual(run([chunk({}), { data: JSON.stringify({ choices: [], usage }) }]), [5, true]);
   assert.deepEqual(run([chunk({})]), [undefined, false]);
+});
+
+test('OpenAI requests send max_tokens as max_completion_tokens, and keep an explicit max_completion_tokens', () => {
+  const sent = (body) => JSON.parse(String(openai.prepare(body, JSON.stringify(body)).payload));
+  const streamed = JSON.parse(openai.prepare({ model: 'gpt-6-luna', messages: [], stream: true, max_tokens: 8 }, '').payload);
+  assert.equal(streamed.max_completion_tokens, 8);
+  const renamed = sent({ model: 'gpt-6-luna', messages: [], max_tokens: 64 });
+  assert.equal(renamed.max_completion_tokens, 64);
+  assert.equal(Object.hasOwn(renamed, 'max_tokens'), false);
+  const explicit = sent({ model: 'gpt-6-luna', messages: [], max_tokens: 64, max_completion_tokens: 128 });
+  assert.equal(explicit.max_completion_tokens, 128);
+  assert.equal(Object.hasOwn(explicit, 'max_tokens'), false);
+  assert.equal(Object.hasOwn(sent({ model: 'gpt-6-luna', messages: [] }), 'max_completion_tokens'), false);
 });

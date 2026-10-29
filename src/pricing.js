@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
  * @typedef {{input: number | null, output: number | null, cache_read: number | null, cache_write: number | null}} Prices
  * @typedef {Prices & {provider: string, priced?: boolean, assumed?: string[], valid_until?: string,
  *   tiers?: (Prices & {above_prompt_tokens: number})[], context_length: number | null, max_output: number | null,
- *   sampling?: boolean}} PriceEntry
+ *   sampling?: boolean, reasoning_effort?: boolean}} PriceEntry
  * @typedef {{prompt_tokens: number, completion_tokens: number, cached_tokens: number, cache_write_tokens: number,
  *   reasoning_tokens: number, cost?: number}} Usage normalized usage; prompt_tokens includes cached and cache-write tokens
  */

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f8fbf9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#10251c" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Base URL, authentication, routing, streaming, and error recovery.">
+<title>API reference | Michael Router</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body id="top" class="documentation">
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap masthead"><a class="brand" href="/">Michael Router</a><nav class="site-nav" aria-label="Documentation"><a href="/docs/api.html">API</a><a href="/docs/providers.html">Providers and models</a></nav></header>
+<main id="main"><article class="wrap doc-content"><header class="doc-intro"><h1>API reference</h1><p>Use the OpenAI Chat Completions format.</p></header><section><h2>Connection</h2><dl class="facts"><div><dt>Base URL</dt><dd><code class="url">https://michael-router.vercel.app/v1</code></dd></div><div><dt>Authentication</dt><dd><code>Authorization: Bearer &lt;password&gt;</code></dd></div></dl><p>Set <code>OPENAI_BASE_URL</code> to this URL and <code>OPENAI_API_KEY</code> to your password. SDKs send the Bearer header for you.</p><p>Send <code>model</code> and <code>messages</code> to <code>POST /v1/chat/completions</code>.</p></section><section><h2>Routing rules</h2><dl class="reference-list"><div><dt><code>claude-*</code></dt><dd>Claude</dd></div><div><dt><code>gpt-*</code> or <code>o3</code></dt><dd>OpenAI</dd></div><div><dt><code>gemini-*</code></dt><dd>Gemini</dd></div><div><dt>IDs containing <code>/</code></dt><dd>OpenRouter. Use only IDs ending in <code>:free</code> or <code>openrouter/free</code>. Paid IDs are refused.</dd></div></dl><p><a href="/docs/providers.html">Use a tested model ID</a>.</p><p>Recommended defaults: Claude <code>claude-opus-5-5</code>, OpenAI <code>gpt-6.1-sol</code>, Gemini <code>gemini-3.5-flash-lite</code>, and OpenRouter <code>openrouter/free</code>.</p></section><section><h2>Reasoning effort</h2><p>Effort defaults to medium for Claude, OpenAI, and Gemini. Set <code>"reasoning_effort": "low" | "medium" | "high"</code>; higher costs more.</p><p>OpenRouter keeps its own default.</p></section><section><h2>Streaming</h2><p>Set <code>stream: true</code>. Read text from <code>choices[0].delta.content</code> as chunks arrive.</p><p>Skip empty <code>choices</code> arrays. They can contain usage.</p><p>A complete stream ends with <code>data: [DONE]</code>. An error event or missing ending means the reply is incomplete.</p></section><section><h2>Errors and what to do</h2><dl class="reference-list"><div><dt>401 · Password rejected</dt><dd>Stop. Check the password. Repeated failures cause a temporary block.</dd></div><div><dt>400 · <code>model_not_allowed</code></dt><dd>Use a free OpenRouter ID.</dd></div><div><dt>400 · <code>model_not_routable</code></dt><dd>Choose a model that matches a routing rule.</dd></div><div><dt>Other 400 errors</dt><dd>Fix the JSON or unsupported fields before retrying.</dd></div><div><dt>429 · Too many requests</dt><dd>Wait for <code>Retry-After</code> before retrying.</dd></div><div><dt>502 · Provider failure</dt><dd>Retry later. For <code>provider_auth_failed</code>, contact the owner. Keep your password unchanged.</dd></div><div><dt>503 · Service unavailable</dt><dd>Retry later. For <code>provider_not_configured</code>, choose another provider or contact the owner.</dd></div></dl></section></article></main>
+<footer class="wrap"><nav class="site-nav" aria-label="Footer documentation"><a href="/docs/api.html">API</a><a href="/docs/providers.html">Providers and models</a></nav><nav class="site-nav" aria-label="Agent resources"><a href="/AGENTS.md">Agent guide</a><a href="/llms.txt">llms.txt</a></nav><p>Private API. Password required for every request.</p></footer>
+<p class="copy-status" role="status" aria-live="polite"></p>
+</body>
+</html>

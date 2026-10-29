@@ -15,7 +15,7 @@ import { after, before, test } from 'node:test';
 import { parsePasswordHash, verifyPassword } from '../../src/auth.js';
 import { loadConfig } from '../../src/config.js';
 import { REPO, createFakeTools, makeScratchRoot } from '../helpers/fake-tools.js';
-import { pathProblem, prohibitedRoots } from '../../scripts/copy-keys-to-vercel.mjs';
+import { pathProblem, prohibitedRoots, validateManifest } from '../../scripts/copy-keys-to-vercel.mjs';
 
 const MARKER = 'SENTINEL';
 const VALUES = Object.freeze({
@@ -565,7 +565,7 @@ test('malformed manifests are refused before anything runs', { skip }, async () 
   /** @type {[string, unknown[], Record<string, unknown>?][]} */
   const cases = [
     ['unknown key "note"', [{ ...stdin, note: 'x' }]],
-    ['"env" must be one of', [{ env: 'OPENAI_API_KEY', source: { type: 'stdin' } }]],
+    ['"env" must be one of', [{ env: 'MISTRAL_API_KEY', source: { type: 'stdin' } }]],
     ['appears more than once', [{ env: 'ANTHROPIC_API_KEY', source: KEYCHAIN }, { env: 'ANTHROPIC_API_KEY', source: { type: 'op', ref: OP_REF } }]],
     ['at most one entry may read stdin', [stdin, { env: 'ANTHROPIC_API_KEY', source: { type: 'stdin' } }]],
     ['cannot share stdin', [stdin, { env: 'DATABASE_URL_POOLED', source: { type: 'stdin-env', var: 'DATABASE_URL_POOLED' } }]],
@@ -620,4 +620,18 @@ test('password-variable conflicts and names missing after the transfer fail with
   assert.match(r.stdout, /^STOPPED at final check: not present after the transfer: ROUTER_PASSWORD_HASH, ANTHROPIC_API_KEY$/m);
   calls = await fakes.calls();
   assert.deepEqual(adds(calls), ['ROUTER_PASSWORD_HASH', 'ANTHROPIC_API_KEY']);
+});
+
+test('the manifest accepts OpenAI and all provider fallback names', () => {
+  const names = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY_2', 'GEMINI_API_KEY_2', 'OPENROUTER_API_KEY_2', 'OPENAI_API_KEY_2'];
+  const entries = names.map((env) => ({ env, source: { type: 'stdin-env', var: env } }));
+  const result = validateManifest({ version: 1, environment: 'production', project: PROJECT, entries });
+  assert.deepEqual(result.entries.map((entry) => entry.env), names);
+});
+
+test('admin passwords accept stdin hashing and cannot combine plaintext with a hash', () => {
+  const base = { version: 1, environment: 'production', project: PROJECT };
+  const entry = { env: 'ROUTER_ADMIN_PASSWORD_HASH', source: { type: 'stdin' }, transform: 'scrypt-hash' };
+  assert.equal(validateManifest({ ...base, entries: [entry] }).entries[0].transform, 'scrypt-hash');
+  assert.throws(() => validateManifest({ ...base, entries: [entry, { env: 'ROUTER_ADMIN_PASSWORD', source: KEYCHAIN }] }), /not both/);
 });

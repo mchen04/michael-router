@@ -2,6 +2,7 @@
 // client-disconnect aborts, waitUntil tracking, static files with the vercel.json headers.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync, readdirSync } from 'node:fs';
 import { SECURITY_HEADERS, startDevServer } from '../../dev/server.js';
 
 test('responses stream chunk by chunk; request bodies arrive; socket address is passed', async () => {
@@ -131,11 +132,27 @@ test('static files from public/ with the same security headers as vercel.json; A
     },
   });
   try {
-    const page = await fetch(`${dev.url}/`);
-    assert.equal(page.status, 200);
-    assert.match(String(page.headers.get('content-type')), /text\/html/);
-    assert.match(await page.text(), /<h1>Michael Router<\/h1>/);
-    for (const [k, v] of Object.entries(SECURITY_HEADERS)) assert.equal(page.headers.get(k), v, k);
+    const expectedHeaders = Object.fromEntries(JSON.parse(readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8'))
+      .headers.find((rule) => rule.source === '/(.*)').headers.map(({ key, value }) => [key.toLowerCase(), value]));
+    assert.deepEqual(SECURITY_HEADERS, expectedHeaders);
+    const documents = readdirSync(new URL('../../public/docs/', import.meta.url), { recursive: true })
+      .filter((file) => file.endsWith('.html')).map((file) => [`/docs/${file}`, 'text/html; charset=utf-8']);
+    const resources = [['/', 'text/html; charset=utf-8'], ...documents,
+      ['/AGENTS.md', 'application/octet-stream'], ['/llms.txt', 'text/plain; charset=utf-8'],
+      ['/style.css', 'text/css; charset=utf-8'], ['/app.js', 'text/javascript; charset=utf-8'], ['/favicon.svg', 'image/svg+xml']];
+    for (const [resource, contentType] of resources) {
+      const response = await fetch(dev.url + resource);
+      assert.equal(response.status, 200, resource);
+      assert.equal(response.headers.get('content-type'), contentType, resource);
+      for (const [key, value] of Object.entries(expectedHeaders)) assert.equal(response.headers.get(key), value, `${resource}: ${key}`);
+      const body = await response.text();
+      if (resource === '/') {
+        assert.match(body, /<h1[^>]*>Four providers\.<br>One connection\.<\/h1>/);
+        assert.match(body, /<title>Four providers, one private API \| Michael Router<\/title>/);
+      } else if (resource.endsWith('.html')) assert.match(body, /<h1[^>]*>[^<]+<\/h1>/, resource);
+      else assert.ok(body.length > 0, resource);
+    }
+    assert.deepEqual(handled, [], 'static files bypass the API handler');
     assert.match(SECURITY_HEADERS['content-security-policy'], /frame-ancestors 'none'/);
     assert.equal(SECURITY_HEADERS['x-robots-tag'], 'noindex');
     assert.equal((await fetch(`${dev.url}/robots.txt`)).status, 200);

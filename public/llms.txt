@@ -1,0 +1,13 @@
+# Michael Router
+
+> One password-protected OpenAI Chat Completions endpoint for Claude, OpenAI, Gemini, and free OpenRouter models.
+
+- [Agent guide](https://michael-router.vercel.app/AGENTS.md): Instructions for coding agents.
+- [Quick start](https://michael-router.vercel.app/): Connection setup and one request per provider.
+- [API guide](https://michael-router.vercel.app/docs/api.html): Authentication, routing, streaming, and errors.
+- [Tested models](https://michael-router.vercel.app/docs/providers.html): Model IDs tested 2026-10-29 and recommended defaults.
+
+Recommended defaults: Claude `claude-opus-5-5`; OpenAI `gpt-6.1-sol`; Gemini `gemini-3.5-flash-lite`; OpenRouter `openrouter/free`.
+Effort defaults to medium for Claude, OpenAI, and Gemini.
+Set `"reasoning_effort": "low" | "medium" | "high"` to change it; higher costs more.
+OpenRouter keeps its own default.

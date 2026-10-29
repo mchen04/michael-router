@@ -237,8 +237,10 @@ export function buildRequest(body, { model, cache }) {
     out.tool_choice = { ...(out.tool_choice ?? { type: 'auto' }), disable_parallel_tool_use: true };
   }
 
+  const nativeOutput = Object.hasOwn(body, 'output_config');
+  if (nativeOutput && !isObject(body.output_config)) throw invalid('invalid_parameter', 'output_config must be an object.');
   /** @type {Record<string, unknown>} */
-  const outputConfig = {};
+  const outputConfig = nativeOutput ? { ...body.output_config } : {};
   const rf = body.response_format;
   if (rf !== undefined && rf !== null) {
     if (!isObject(rf) || typeof rf.type !== 'string') throw invalid('invalid_parameter', 'response_format must be an object with a type.');
@@ -258,8 +260,10 @@ export function buildRequest(body, { model, cache }) {
     const effort = Object.hasOwn(EFFORTS, body.reasoning_effort) ? EFFORTS[/** @type {keyof typeof EFFORTS} */ (body.reasoning_effort)] : null;
     if (!effort) throw invalid('invalid_parameter', `reasoning_effort must be one of: ${Object.keys(EFFORTS).join(', ')}.`);
     outputConfig.effort = effort;
+  } else if (!Object.hasOwn(body, 'reasoning_effort') && !nativeOutput && !Object.hasOwn(body.anthropic ?? {}, 'output_config')) {
+    outputConfig.effort = 'medium';
   }
-  if (Object.keys(outputConfig).length) out.output_config = outputConfig;
+  if (nativeOutput || Object.keys(outputConfig).length) out.output_config = outputConfig;
 
   for (const name of /** @type {const} */ (['temperature', 'top_p'])) {
     const v = body[name];

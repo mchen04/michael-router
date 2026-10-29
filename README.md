@@ -1,11 +1,15 @@
 # Michael Router
 
-Michael Router is a password-protected gateway that speaks the OpenAI Chat Completions API and
-forwards each request to Claude (Anthropic Messages API), Gemini or OpenRouter, chosen by the
+Michael Router is a gateway with separate user and owner passwords that speaks the OpenAI Chat Completions API and
+forwards each request to Claude (Anthropic Messages API), Gemini, OpenRouter or OpenAI, chosen by the
 request's `model` name. It runs as one Vercel function, keeps its state (stored key overrides,
 usage counters, the wrong-password limiter and recent errors) in a PostgreSQL database (schema
 `michael_router`), records usage and cost per provider and model, and comes with a command-line
-client, `mrouter`.
+owner-only client, `mrouter`.
+
+Friends receive only the user password and may call `/v1/*`.
+Only the separate admin password grants access to `/control/*`.
+Do not share the admin password or the owner CLI configuration.
 
 ## Routing
 
@@ -13,10 +17,20 @@ The first matching rule wins:
 
 | `model` | Provider |
 |---------|----------|
-| contains `/` (for example `openrouter/auto`) | OpenRouter, name forwarded unchanged |
+| contains `/` (for example `openrouter/free`) | OpenRouter, name forwarded unchanged |
 | starts with `claude-` | Claude, translated to the Anthropic Messages API |
 | starts with `gemini-` | Gemini, through its OpenAI-compatible endpoint |
+| starts with `gpt-` or matches `^o\d` | OpenAI Chat Completions |
 | anything else | refused: 400 `model_not_routable` |
+
+OpenRouter accepts only names ending in `:free` and `openrouter/free`.
+Paid models, model fallbacks, routing overrides, presets and plugins return 400 before any upstream call.
+The router also sets a zero-price provider guard.
+
+Each provider supports an optional fallback environment key ending in `_API_KEY_2`.
+The router retries billing or exhausted-credit errors once, before sending any response bytes.
+Plain rate limits do not trigger retries.
+Usage records count requests by key slot without storing keys.
 
 ## Requirements
 
@@ -25,7 +39,7 @@ The first matching rule wins:
 - PostgreSQL for the store: Neon in production, PostgreSQL 14 or later (the tests run on 18); the
   router refuses protected requests without one, and `scripts/migrate.mjs` creates its schema
   (`docs/DEPLOY.md` step 3)
-- API keys for the providers you use: Anthropic, Gemini, OpenRouter
+- API keys for the providers you use: Anthropic, Gemini, OpenRouter, OpenAI
 
 ## Documentation
 
@@ -73,3 +87,17 @@ The access password exists only as a Vercel sensitive environment variable
 (`ROUTER_PASSWORD_HASH`, a scrypt hash, or `ROUTER_PASSWORD`), never in the repository. Provider
 keys come from environment variables or are stored encrypted on the router, and are never
 accepted as command arguments or written to logs.
+
+## Owner credential
+
+Set exactly one of `ROUTER_ADMIN_PASSWORD_HASH` or `ROUTER_ADMIN_PASSWORD` on the server.
+Use a different password from the shared user password.
+The hash uses the same scrypt format and helper as `ROUTER_PASSWORD_HASH`.
+Without an admin credential, control routes fail closed with 503; user chat remains available.
+The shared user password receives 403 `admin_required` on control routes without adding a failed-password attempt.
+Both roles share the wrong-password limiter.
+
+The owner CLI reads `MROUTER_ADMIN_PASSWORD` or the separate credential saved by `mrouter login`.
+Chat can use `MROUTER_PASSWORD` or the admin credential.
+The smoke script reads the user password from stdin and the admin password from `MR_ADMIN_PASSWORD`.
+See `docs/DEPLOY.md` for a separate admin-key transfer manifest.

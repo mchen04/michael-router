@@ -1,6 +1,6 @@
 # Michael Router — CLI (`mrouter`)
 
-`mrouter` is the command-line client for a Michael Router deployment. It logs in, manages the
+`mrouter` is the owner-only command-line client for a Michael Router deployment. It logs in, manages the
 provider keys stored on the router, sends prompts, runs smoke tests, and shows usage, cost and
 recent errors. It has no dependencies beyond Node.js. The design summary is in `DESIGN.md` §9,
 and the HTTP contract it uses is in `API.md`.
@@ -25,7 +25,8 @@ can also run `node cli/mrouter.js …` without installing anything.
 |------|----------|------|
 | `$XDG_CONFIG_HOME/michael-router/` (default `~/.config/michael-router/`) | config directory | `0700` |
 | `…/config.json` | `{"url": "https://<host>"}`, written by `login` | `0600` |
-| `…/credentials` | the router password, written by `login` | `0600` |
+| `…/admin-credentials` | the admin password, written by `login` | `0600` |
+| `…/credentials` | legacy user password; used for chat only | `0600` |
 
 - `login` saves both files, and only after the router has accepted the password.
 - Each file is written atomically: a new `0600` file is created exclusively next to the target,
@@ -49,15 +50,12 @@ whitespace, a control character, or a host that the URL parser would read differ
 it is typed (a percent-encoded or shortened host such as `127.1`) is refused with exit code 2.
 Only letter case and a default port (`:443`, `:80`) are normalized.
 
-Where the password comes from:
-
-1. `MROUTER_PASSWORD`, which overrides the stored password.
-2. The stored password. It is only sent to the URL it was saved with: running against another
-   URL fails with exit code 2 and tells you to log in there or set `MROUTER_PASSWORD`.
-
-Both must be one line of printable ASCII without leading or trailing spaces. A malformed
-credentials file fails with exit code 2, before anything is sent, and asks you to run
-`mrouter login` again.
+Control commands read `MROUTER_ADMIN_PASSWORD`, then `admin-credentials`.
+They never use the shared user password.
+Chat reads `MROUTER_PASSWORD`, then `MROUTER_ADMIN_PASSWORD`, then a saved user or admin credential.
+Saved credentials are sent only to their saved URL.
+Both passwords must use printable ASCII without leading or trailing spaces.
+Malformed credential files fail before any request is sent.
 
 ## Global flags
 
@@ -77,7 +75,7 @@ for example `mrouter ask -- -1 is negative`.
 
 ### `login [--url URL]`
 
-Reads the password from a hidden prompt, or from stdin when piped. It then checks the password
+Reads the admin password from a hidden prompt, or from stdin when piped. It then checks the password
 with `GET /control/health` and only on success saves the URL and the password. `login` takes no
 password flag and no arguments.
 
@@ -88,7 +86,7 @@ mrouter login --url https://router.example.com < password-file
 
 ### `logout`
 
-Deletes the stored password. It also warns if `MROUTER_PASSWORD` is still set.
+Deletes saved user and admin credentials. It warns if either password environment variable remains set.
 
 ```sh
 mrouter logout
@@ -96,7 +94,7 @@ mrouter logout
 
 ### `status`
 
-Shows the URL and where it came from, whether a password is stored (and for which URL), and the
+Shows the URL and where it came from, whether an admin password is stored (and for which URL), and the
 config paths with their modes. It is local only: nothing is sent, and the password is never
 shown.
 
@@ -124,7 +122,7 @@ when the stored key was last updated. Key values are never shown.
 mrouter keys list
 ```
 
-### `keys set <claude|gemini|openrouter> [--no-verify]`
+### `keys set <claude|gemini|openrouter|openai> [--no-verify]`
 
 Reads the key from a hidden prompt, or from stdin when piped. It checks the key's shape locally,
 then sends it to the router. Unless `--no-verify` is given, the router first checks the key
@@ -145,7 +143,7 @@ mrouter keys set claude
 mrouter keys set gemini < gemini-key-file
 ```
 
-### `keys unset <claude|gemini|openrouter>`
+### `keys unset <claude|gemini|openrouter|openai>`
 
 Removes the stored key. The provider then uses its environment key, or has no key at all.
 
@@ -192,7 +190,7 @@ mrouter ask "Explain HTTP/2 in one sentence"
 git diff | mrouter ask -m gemini-2.5-flash "Review this diff:"
 ```
 
-### `test [claude|gemini|openrouter...] [-m MODEL]`
+### `test [claude|gemini|openrouter|openai...] [-m MODEL]`
 
 For each provider, sends one non-streaming and one streaming request: the prompt
 `Reply with the single word: pong` with `max_tokens` 256, using the provider's cheap smoke model
@@ -313,3 +311,41 @@ Same as `mrouter <command> --help`.
   sent over `https://`, or `http://` to the local machine.
 - **Stored privately.** The config directory is `0700` and its files are `0600`, written
   atomically, with a warning if the credentials file is readable by others.
+
+## OpenAI, free models and fallback keys
+
+`mrouter keys set openai`, `mrouter keys unset openai` and `mrouter keys list` support OpenAI.
+Key verification uses OpenAI's `/v1/models` endpoint without spending tokens.
+`mrouter test openai` uses `gpt-6-luna` for plain and streaming checks.
+`mrouter ask -m o3` routes to OpenAI.
+
+OpenRouter accepts `openrouter/free` and model names ending in `:free`.
+Paid names return 400 `model_not_allowed` before any upstream call.
+`mrouter test openrouter` uses `openrouter/free`.
+
+Fallback keys are environment-only and use the provider's primary variable name plus `_2`.
+The CLI changes slot 1 only. Unsetting its override restores the primary environment key.
+The router retries explicit billing or exhausted-credit errors once before response bytes start.
+Generic rate limits and ambiguous quota errors do not retry.
+`mrouter usage --json` includes `key_slot_1_requests` and `key_slot_2_requests` when nonzero.
+
+## Owner-only credentials
+
+Keep this CLI and its configuration with the owner. Friends use the `/v1/*` API with the shared password.
+Run `mrouter login --url https://<host>` and enter the admin password at its hidden prompt.
+Login verifies `/control/health`, then saves the owner credential in `admin-credentials` with mode 0600.
+The saved credential stays bound to the saved router URL.
+`mrouter status --json` reports its presence under `admin_password`, never its value.
+`mrouter logout` removes both the saved admin credential and any legacy user credential.
+
+`MROUTER_ADMIN_PASSWORD` overrides the saved owner credential.
+Health, keys, usage and errors require this owner credential.
+The CLI never substitutes `MROUTER_PASSWORD` for it.
+Chat and models prefer `MROUTER_PASSWORD`, then the owner credential.
+A default `mrouter test` needs admin access to discover configured providers.
+An explicit model or provider test uses chat access only.
+
+The server returns 403 `admin_required` if a control request carries the shared password.
+This does not add a wrong-password failure.
+Set different server passwords for the user and admin roles.
+The existing `hash-password` command emits a hash valid for either server password variable.

@@ -1,5 +1,7 @@
 // Gemini and OpenRouter pass-through specifics (DESIGN §5.4). Request bodies are forwarded as the
 // client sent them, except that a streaming Gemini request gets `stream_options.include_usage`.
+import { modelInfo } from '../pricing.js';
+import { GatewayError } from '../http.js';
 import { serializeComment, serializeEvent } from '../sse.js';
 import { normalizeUsage } from '../usage.js';
 
@@ -48,6 +50,18 @@ function geminiUsage(u) {
   return { ...usage, completion_tokens: usage.completion_tokens + hidden, reasoning_tokens: Math.max(usage.reasoning_tokens, hidden) };
 }
 
+function prepareChat(body, bytes) {
+  if (body.stream !== true) return { payload: bytes, stream: false, stripUsageOnly: false };
+  const asked = body.stream_options?.include_usage === true;
+  const streamOptions = isObject(body.stream_options) ? body.stream_options : {};
+  const payload = JSON.stringify({ ...body, stream_options: { ...streamOptions, include_usage: true } });
+  return { payload, stream: true, stripUsageOnly: !asked };
+}
+
+function defaultEffort(body, native = false) {
+  return native || Object.hasOwn(body, 'reasoning_effort') ? body : { ...body, reasoning_effort: 'medium' };
+}
+
 /** @type {PassthroughProvider} */
 export const gemini = {
   chatPath: '/v1beta/openai/chat/completions',
@@ -55,13 +69,29 @@ export const gemini = {
   verifyRequest: (baseUrl, key) => ({ url: `${baseUrl}/v1beta/openai/models`, headers: bearer(key) }),
   keyInvalid: (status, { message = '', reasons = [] }) => status === 400 && (GEMINI_KEY_INVALID.test(message) || reasons.includes('API_KEY_INVALID')),
   prepare(body, bytes) {
-    if (body.stream !== true) return { payload: bytes, stream: false, stripUsageOnly: false };
-    const asked = body.stream_options?.include_usage === true;
-    const streamOptions = isObject(body.stream_options) ? body.stream_options : {};
-    const payload = JSON.stringify({ ...body, stream_options: { ...streamOptions, include_usage: true } });
-    return { payload, stream: true, stripUsageOnly: !asked };
+    const thinking = body.extra_body?.google?.thinking_config;
+    const native = isObject(thinking) && (Object.hasOwn(thinking, 'thinking_level') || Object.hasOwn(thinking, 'thinking_budget'));
+    const request = defaultEffort(body, native);
+    return prepareChat(request, request === body ? bytes : JSON.stringify(request));
   },
   usage: geminiUsage,
+};
+
+export const openai = {
+  chatPath: '/v1/chat/completions',
+  authHeaders: bearer,
+  verifyRequest: (baseUrl, key) => ({ url: `${baseUrl}/v1/models`, headers: bearer(key) }),
+  keyInvalid: () => false,
+  prepare(body, bytes) {
+    const native = isObject(body.reasoning) && Object.hasOwn(body.reasoning, 'effort');
+    let request = defaultEffort(body, native || modelInfo('openai', body.model)?.reasoning_effort === false);
+    if (Object.hasOwn(request, 'max_tokens')) {
+      const { max_tokens: maxTokens, ...rest } = request;
+      request = Object.hasOwn(rest, 'max_completion_tokens') ? rest : { ...rest, max_completion_tokens: maxTokens };
+    }
+    return prepareChat(request, request === body ? bytes : JSON.stringify(request));
+  },
+  usage: normalizeUsage,
 };
 
 /** @type {PassthroughProvider} */
@@ -70,7 +100,14 @@ export const openrouter = {
   authHeaders: bearer,
   verifyRequest: (baseUrl, key) => ({ url: `${baseUrl}/api/v1/key`, headers: bearer(key) }),
   keyInvalid: () => false,
-  prepare: (body, bytes) => ({ payload: bytes, stream: body.stream === true, stripUsageOnly: false }),
+  prepare(body) {
+    if (['models', 'route', 'plugins', 'preset'].some((name) => Object.hasOwn(body, name))) {
+      throw new GatewayError(400, 'model_not_allowed', 'OpenRouter model fallbacks, routing overrides, presets and paid plugins are disabled.');
+    }
+    const provider = isObject(body.provider) ? body.provider : {};
+    const payload = JSON.stringify({ ...body, models: [body.model], provider: { ...provider, allow_fallbacks: false, max_price: { prompt: 0, completion: 0, request: 0, image: 0 } } });
+    return { payload, stream: body.stream === true, stripUsageOnly: false };
+  },
   usage: normalizeUsage,
 };
 

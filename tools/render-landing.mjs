@@ -23,6 +23,11 @@ const VIEWPORTS = [
   { name: 'tablet', width: 820, height: 1180, deviceScaleFactor: 2, mobile: true },
   { name: 'desktop', width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
 ];
+const PAGES = [
+  { path: '/', name: 'landing', copies: 6, providers: 4 },
+  { path: '/docs/api.html', name: 'api', copies: 0, providers: 0 },
+  { path: '/docs/providers.html', name: 'providers', copies: 0, providers: 4 },
+];
 const SCHEMES = /** @type {const} */ (['light', 'dark']);
 
 /** @param {string[]} argv */
@@ -56,6 +61,28 @@ function measure() {
     }
     return false;
   };
+  const contrastProblems = [];
+  let minimumContrast = Infinity;
+  const luminance = (color) => {
+    const values = color.match(/[\d.]+/g).slice(0, 3).map(Number).map((value) => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
+  };
+  for (const el of document.body.querySelectorAll('*')) {
+    if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: true }) || el.classList.contains('skip')) continue;
+    if (![...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim())) continue;
+    const style = getComputedStyle(el);
+    let background = el;
+    while (background.parentElement && getComputedStyle(background).backgroundColor === 'rgba(0, 0, 0, 0)') background = background.parentElement;
+    const foregroundLuminance = luminance(style.color);
+    const backgroundLuminance = luminance(getComputedStyle(background).backgroundColor);
+    const ratio = (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+    minimumContrast = Math.min(minimumContrast, ratio);
+    const large = parseFloat(style.fontSize) >= 24 || (parseFloat(style.fontSize) >= 18.66 && Number(style.fontWeight) >= 700);
+    if (ratio < (large ? 3 : 4.5)) contrastProblems.push(`${describe(el)} ${ratio.toFixed(2)}:1`);
+  }
   const overflowing = [];
   for (const el of document.body.querySelectorAll('*')) {
     const r = el.getBoundingClientRect();
@@ -72,6 +99,7 @@ function measure() {
   const smallTargets = [];
   let smallestTarget = null;
   for (const el of document.querySelectorAll('a[href], button, input, select, textarea, summary')) {
+    if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: true }) || el.classList.contains('skip')) continue;
     el.scrollIntoView({ block: 'center' });
     const r = el.getBoundingClientRect();
     const [cx, cy] = [r.left + r.width / 2, r.top + r.height / 2];
@@ -109,18 +137,13 @@ function measure() {
     probe.remove();
     return y;
   };
-  const h1 = document.querySelector('h1');
-  const toc = document.querySelector('.toc');
-  const tocNo = document.querySelector('.toc li:last-child .toc-no');
-  const besideTitle = h1 && toc && tocNo && toc.getBoundingClientRect().top < h1.getBoundingClientRect().bottom;
-  const rule = document.querySelector('.route')?.getBoundingClientRect();
-  const links = [...document.querySelectorAll('.toc a')].map((a) => a.getBoundingClientRect());
-  const oneLine = links.length > 1 && links.every((r) => Math.abs(r.top - links[0].top) < 1);
   const smallest = Object.entries(sizes)
     .map(([k, n]) => ({ element: k.slice(0, k.lastIndexOf(' ')), px: parseFloat(k.slice(k.lastIndexOf(' ') + 1)), count: n }))
     .sort((a, b) => a.px - b.px)
     .slice(0, 6);
   return {
+    contrastProblems,
+    minimumContrast,
     scrollWidth: doc.scrollWidth,
     innerWidth: window.innerWidth,
     horizontalOverflow: doc.scrollWidth > window.innerWidth,
@@ -130,9 +153,7 @@ function measure() {
     smallestTapTarget: smallestTarget?.target ?? null,
     minProseTextPx: minProse,
     smallestText: smallest,
-    firstRule: rule ? { top: Math.round(rule.top), bottom: Math.round(rule.bottom), inFirstViewport: rule.bottom <= window.innerHeight } : null,
-    titleNavBaselineDelta: besideTitle ? Math.round((baseline(tocNo) - baseline(h1)) * 10) / 10 : null,
-    navLinkGaps: oneLine ? links.slice(1).map((r, i) => Math.round((r.left - links[i].right) * 10) / 10) : null,
+
     baseUrl: document.querySelector('.facts .url')?.textContent ?? null,
   };
 }
@@ -141,7 +162,7 @@ function measure() {
  * @param {any} browser @param {string} origin @param {string} outDir
  * @param {typeof VIEWPORTS[number]} vp @param {'light' | 'dark'} scheme @param {{javaScript?: boolean, suffix?: string, fullPage?: boolean}} [opts]
  */
-async function render(browser, origin, outDir, vp, scheme, { javaScript = true, suffix = '', fullPage = true } = {}) {
+async function render(browser, origin, outDir, vp, scheme, { javaScript = true, suffix = '', fullPage = true, target = PAGES[0] } = {}) {
   const context = await browser.newContext({
     viewport: { width: vp.width, height: vp.height },
     deviceScaleFactor: vp.deviceScaleFactor,
@@ -150,6 +171,7 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
     colorScheme: scheme,
     javaScriptEnabled: javaScript,
     serviceWorkers: 'block',
+    permissions: ['clipboard-read', 'clipboard-write'],
   });
   /** @type {string[]} */
   const consoleErrors = [];
@@ -167,6 +189,12 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
   });
   try {
     const page = await context.newPage();
+    await page.addInitScript(() => {
+      window.landingShift = 0;
+      new PerformanceObserver((entries) => {
+        for (const entry of entries.getEntries()) if (!entry.hadRecentInput) window.landingShift += entry.value;
+      }).observe({ type: 'layout-shift', buffered: true });
+    });
     page.on('console', (/** @type {any} */ msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
@@ -181,15 +209,80 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
         }),
       );
     });
-    const response = await page.goto(`${origin}/`, { waitUntil: 'networkidle' });
+    const response = await page.goto(`${origin}${target.path}`, { waitUntil: 'networkidle' });
     await page.locator('body').evaluate(() => document.fonts.ready.then(() => undefined)).catch(() => {});
     await Promise.all(pending);
-    const name = `${vp.name}-${scheme}${suffix}`;
+    const name = `${target.name}-${vp.name}-${scheme}${suffix}`;
     const shots = { firstViewport: `${name}-viewport.png`, full: fullPage ? `${name}-full.png` : null };
     await page.screenshot({ path: path.join(outDir, shots.firstViewport) });
     if (shots.full) await page.screenshot({ path: path.join(outDir, shots.full), fullPage: true });
-    const metrics = javaScript ? await page.evaluate(measure) : { baseUrl: await page.locator('.facts .url').textContent() };
+    const initialMetrics = await page.evaluate(measure);
+    const interactionProblems = [];
+    if (initialMetrics.horizontalOverflow) interactionProblems.push('Initial page overflows horizontally');
+    interactionProblems.push(...initialMetrics.smallTapTargets.map((target) => `Initial tap target: ${target}`));
+    interactionProblems.push(...initialMetrics.contrastProblems.map((target) => `Initial contrast: ${target}`));
+    const pageProblems = await page.evaluate((target) => {
+      const problems = [];
+      if (document.querySelectorAll('h1').length !== 1) problems.push('Expected one main heading');
+      if (document.querySelectorAll('[data-copy]').length !== target.copies) problems.push(`Expected ${target.copies} copy examples`);
+      if (document.querySelectorAll('.provider').length !== target.providers) problems.push(`Expected ${target.providers} providers`);
+      if (target.name === 'api' && !document.body.textContent.includes('https://michael-router.vercel.app/v1')) problems.push('Missing base URL');
+      if (!document.title || !document.querySelector('meta[name="description"]')?.content) problems.push('Missing page metadata');
+      if (document.querySelector('style, [style], [onclick], script:not([src])')) problems.push('Inline code violates CSP');
+      for (const nav of document.querySelectorAll('header .site-nav, footer .site-nav:first-child')) {
+        if (nav.querySelectorAll('a').length !== 2) problems.push('Missing documentation link');
+      }
+      if (/\/control\/|\bmrouter\b|\bCLI\b/.test(document.body.textContent)) problems.push('Owner-only content is public');
+      const ids = [...document.querySelectorAll('[id]')].map((el) => el.id);
+      if (new Set(ids).size !== ids.length) problems.push('Duplicate element ID');
+      if (document.querySelector('meta[name="robots"]')?.getAttribute('content') !== 'noindex') problems.push('Missing noindex');
+      return problems;
+    }, target);
+    interactionProblems.push(...pageProblems);
+    let copiesChecked = 0;
+    const layoutShift = javaScript ? await page.evaluate(() => window.landingShift) : 0;
+    if (javaScript) {
+      if (target.name === 'landing') {
+        const heroVisible = await page.locator('.hero').evaluate((el) => el.getBoundingClientRect().bottom <= innerHeight);
+        if (!heroVisible) interactionProblems.push('Hero does not fit above the fold');
+        await page.locator('.primary').click();
+        if (new URL(page.url()).hash !== '#quickstart') interactionProblems.push('Primary action misses setup');
+      }
+      while (await page.locator('details:not([open]) > summary').count()) await page.locator('details:not([open]) > summary').first().click();
+      for (const button of await page.locator('[data-copy]').all()) {
+        const id = await button.getAttribute('data-copy');
+        const expected = await page.locator(`[id="${id}"]`).textContent();
+        await button.click();
+        const actual = await page.evaluate(() => navigator.clipboard.readText());
+        if (actual !== expected) interactionProblems.push(`Copy mismatch: ${id}`);
+        if (await page.locator('.copy-status').textContent() !== 'Example copied.') interactionProblems.push(`Missing feedback: ${id}`);
+        copiesChecked++;
+      }
+      if (target.copies > 0) {
+      await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Denied'); } } }));
+      await page.locator('[data-copy]').first().click();
+      if (await page.locator('.copy-status').textContent() !== 'Example copied.') interactionProblems.push('Clipboard fallback failed');
+      await page.evaluate(() => { document.execCommand = () => false; });
+      await page.locator('[data-copy]').first().click();
+      if (!(await page.locator('.copy-status').textContent()).startsWith('Copy unavailable.')) interactionProblems.push('Clipboard failure has no guidance');
+      }
+      await page.locator('.skip').focus();
+      let reachedLastLink = false;
+      for (let step = 0; step < 150; step++) {
+        await page.keyboard.press('Tab');
+        if (await page.evaluate(() => document.activeElement?.getAttribute('href') === '/llms.txt')) {
+          reachedLastLink = true;
+          break;
+        }
+      }
+      if (!reachedLastLink) interactionProblems.push('Last link is not keyboard reachable');
+      await page.evaluate(() => { document.querySelector('.copy-status').textContent = ''; document.activeElement.blur(); window.scrollTo(0, 0); });
+      await page.screenshot({ path: path.join(outDir, `${name}-expanded.png`), fullPage: true });
+    }
+    const metrics = await page.evaluate(measure);
     return {
+      page: target.name,
+      path: target.path,
       viewport: vp.name,
       width: vp.width,
       height: vp.height,
@@ -199,6 +292,9 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
       status: response?.status() ?? null,
       png: shots,
       ...metrics,
+      interactionProblems,
+      copiesChecked,
+      layoutShift,
       transferredBytes: resources.reduce((n, r) => n + r.bytes, 0),
       resources: resources.sort((a, b) => a.path.localeCompare(b.path)),
       consoleErrors,
@@ -218,40 +314,70 @@ async function main() {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, args: ['--force-color-profile=srgb'] });
+    const probeContext = await browser.newContext();
+    const probePage = await probeContext.newPage();
+    await probePage.goto(dev.url);
+    await probePage.evaluate(() => {
+      const probe = document.createElement('canvas');
+      probe.width = innerWidth + 100;
+      probe.height = 1;
+      document.body.append(probe);
+    });
+    const overflowDetectionProven = (await probePage.evaluate(measure)).horizontalOverflow;
+    await probeContext.close();
+    if (!overflowDetectionProven) throw new Error('Overflow check missed a deliberate overflow');
     const renders = [];
-    for (const vp of VIEWPORTS) for (const scheme of SCHEMES) renders.push(await render(browser, dev.url, out, vp, scheme));
-    const noJs = await render(browser, dev.url, out, VIEWPORTS[0], 'light', { javaScript: false, suffix: '-nojs', fullPage: false });
+    for (const target of PAGES) {
+      for (const vp of VIEWPORTS) for (const scheme of SCHEMES) renders.push(await render(browser, dev.url, out, vp, scheme, { target }));
+      console.log(`checked ${target.name} at ${VIEWPORTS.length} widths in both themes`);
+    }
+    const noJs = [];
+    for (const target of PAGES) noJs.push(await render(browser, dev.url, out, VIEWPORTS[0], 'light', { javaScript: false, suffix: '-nojs', fullPage: false, target }));
+    const linkProblems = [];
+    const links = new Set(['/AGENTS.md', '/llms.txt']);
+    for (const target of PAGES) {
+      const response = await fetch(`${dev.url}${target.path}`);
+      const html = await response.text();
+      for (const match of html.matchAll(/(?:href|src)="([^"]+)"/g)) {
+        if (match[1].startsWith('/')) links.add(match[1].split('#')[0]);
+      }
+    }
+    for (const link of links) if (!(await fetch(`${dev.url}${link}`)).ok) linkProblems.push(`Broken internal link: ${link}`);
     const favicon = await fetch(`${dev.url}/favicon.svg`);
     const problems = [
-      ...renders.filter((r) => r.horizontalOverflow).map((r) => `horizontal overflow: ${r.viewport} ${r.scheme}`),
-      ...renders.flatMap((r) => r.smallTapTargets.map((t) => `tap target under 44 px (${r.viewport} ${r.scheme}): ${t}`)),
-      ...[...renders, noJs].flatMap((r) => [
+      ...[...renders, ...noJs].filter((r) => r.horizontalOverflow).map((r) => `horizontal overflow: ${r.viewport} ${r.scheme}`),
+      ...[...renders, ...noJs].flatMap((r) => r.smallTapTargets.map((t) => `tap target under 44 px (${r.viewport} ${r.scheme}): ${t}`)),
+      ...[...renders, ...noJs].flatMap((r) => [
         ...(r.status === 200 ? [] : [`page status ${r.status}: ${r.viewport} ${r.scheme}`]),
         ...r.consoleErrors.map((e) => `console error (${r.viewport} ${r.scheme}): ${e}`),
         ...r.failedRequests.map((e) => `failed request (${r.viewport} ${r.scheme}): ${e}`),
         ...r.externalRequests.map((e) => `external request (${r.viewport} ${r.scheme}): ${e}`),
       ]),
+      ...[...renders, ...noJs].flatMap((r) => r.interactionProblems.map((p) => `${r.page} ${r.viewport} ${r.scheme}: ${p}`)),
+      ...linkProblems,
+      ...[...renders, ...noJs].flatMap((r) => r.contrastProblems.map((p) => `Contrast ${r.page} ${r.scheme}: ${p}`)),
+      ...renders.filter((r) => r.layoutShift > 0.01).map((r) => `Layout shift: ${r.layoutShift}`),
       ...(favicon.ok ? [] : [`favicon status ${favicon.status}`]),
     ];
     const summary = {
+      overflow_detection_proven: overflowDetectionProven,
       generated_at: new Date().toISOString(),
       chromium: browser.version(),
       origin: dev.url,
       ok: problems.length === 0,
       problems,
-      horizontal_overflow: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.horizontalOverflow])),
+      horizontal_overflow: Object.fromEntries(renders.map((r) => [`${r.page}-${r.viewport}-${r.scheme}`, r.horizontalOverflow])),
       transferred_bytes: Math.max(...renders.map((r) => r.transferredBytes)),
-      first_rule_in_first_viewport: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.firstRule?.inFirstViewport ?? null])),
-      title_nav_baseline_delta_px: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.titleNavBaselineDelta])),
-      nav_link_gaps_px: Object.fromEntries(renders.map((r) => [`${r.viewport}-${r.scheme}`, r.navLinkGaps])),
-      console_errors: renders.reduce((n, r) => n + r.consoleErrors.length, noJs.consoleErrors.length),
-      base_url: { with_javascript: renders[0].baseUrl, without_javascript: noJs.baseUrl },
+      copies_checked: renders.reduce((n, r) => n + r.copiesChecked, 0),
+      layout_shift: Object.fromEntries(renders.map((r) => [`${r.page}-${r.viewport}-${r.scheme}`, r.layoutShift])),
+      console_errors: renders.reduce((n, r) => n + r.consoleErrors.length, noJs.reduce((n, r) => n + r.consoleErrors.length, 0)),
+      base_url: { with_javascript: renders[0].baseUrl, without_javascript: noJs[0].baseUrl },
       favicon: { status: favicon.status, content_type: favicon.headers.get('content-type'), bytes: (await favicon.arrayBuffer()).byteLength },
       renders,
       no_javascript: noJs,
     };
     await writeFile(path.join(out, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
-    console.log(`rendered ${renders.length * 2 + 1} PNGs to ${out}; ${summary.transferred_bytes} bytes; ${problems.length} problems`);
+    console.log(`rendered ${renders.length * 3 + noJs.length} PNGs to ${out}; ${summary.transferred_bytes} bytes; ${problems.length} problems`);
     for (const p of problems) console.log(`  ${p}`);
     process.exitCode = problems.length ? 1 : 0;
   } finally {
