@@ -70,7 +70,12 @@ export const openai = {
   authHeaders: bearer,
   verifyRequest: (baseUrl, key) => ({ url: `${baseUrl}/v1/models`, headers: bearer(key) }),
   keyInvalid: () => false,
-  prepare: gemini.prepare,
+  prepare(body, bytes) {
+    if (!Object.hasOwn(body, 'max_tokens')) return gemini.prepare(body, bytes);
+    const { max_tokens: maxTokens, ...rest } = body;
+    const renamed = Object.hasOwn(rest, 'max_completion_tokens') ? rest : { ...rest, max_completion_tokens: maxTokens };
+    return gemini.prepare(renamed, JSON.stringify(renamed));
+  },
   usage: normalizeUsage,
 };
 
