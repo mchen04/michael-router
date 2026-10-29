@@ -130,9 +130,9 @@ test('ask footers: estimated and exact cost; --json output parses; the default m
   assert.equal(stack.fake.requests.at(-1)?.body.model, 'claude-haiku-5-5');
   assert.match(claude.stderr, /^provider claude · model claude-haiku-5-5 · tokens 2,500 prompt \(2,000 cached\) \/ 50 completion · cost \$0\.000105 estimated · /);
 
-  const or = await mr(['ask', '-m', 'vendor/fake-ok', 'hi']);
+  const or = await mr(['ask', '-m', 'vendor/fake-ok:free', 'hi']);
   assert.equal(or.stdout, 'Hello from the fake OpenRouter API.\n');
-  assert.match(or.stderr, /^provider openrouter · model vendor\/fake-ok · tokens 1,000 prompt \(100 cached\) \/ 200 completion · cost \$0\.001230 exact · /);
+  assert.match(or.stderr, /^provider openrouter · model vendor\/fake-ok:free · tokens 1,000 prompt \(100 cached\) \/ 200 completion · cost \$0\.001230 exact · /);
 
   const streamed = await mr(['ask', '--json', '-m', 'gemini-2.5-flash-lite', 'hi']);
   assert.equal(streamed.code, 0, streamed.stderr);
@@ -203,9 +203,9 @@ test('ask failures: upstream errors exit 4 with provider, status, code and messa
   assert.equal(echoed.code, 4);
   assert.match(echoed.stderr, /during the stream \(overloaded_error\): stream failed for key \[redacted\]\n$/);
 
-  const unroutable = await mr(['ask', '-m', 'gpt-5', 'hi']);
+  const unroutable = await mr(['ask', '-m', 'other-model', 'hi']);
   assert.equal(unroutable.code, 1);
-  assert.match(unroutable.stderr, /^mrouter: router refused the request \(HTTP 400, model_not_routable\): Model "gpt-5" is not routable\./);
+  assert.match(unroutable.stderr, /^mrouter: router refused the request \(HTTP 400, model_not_routable\): Model "other-model" is not routable\./);
 
   const slow = await mr(['ask', '--timeout', '0.5', '-m', 'claude-fake-slow-first-byte', 'hi']);
   assert.equal(slow.code, 5);
@@ -291,7 +291,7 @@ test('test: one non-streaming and one streaming check per configured provider, w
   const expected = [
     ['claude', 'claude-haiku-5-5', '2,500/50/2,000', '$0.000105 estimated'],
     ['gemini', 'gemini-3.5-flash-lite', '1,200/300/200', '$0.001056 estimated'],
-    ['openrouter', 'google/gemini-2.5-flash-lite', '1,000/200/100', '$0.001230 exact'],
+    ['openrouter', 'openrouter/free', '1,000/200/100', '$0.001230 exact'],
   ];
   assert.equal(rows.length, 6);
   rows.forEach((row, i) => {
@@ -349,9 +349,9 @@ test('test -m/--model checks one model on the provider it routes to; bad provide
     ],
   );
   for (const [args, stderr] of [
-    [['test', 'anthropic'], /^mrouter: unknown provider "anthropic"; use any of: claude, gemini, openrouter\n$/],
+    [['test', 'anthropic'], /^mrouter: unknown provider "anthropic"; use any of: claude, gemini, openrouter, openai\n$/],
     [['test', 'claude', '--model', 'gemini-2.5-flash'], /^mrouter: --model gemini-2\.5-flash routes to gemini; give no provider or only that one\n$/],
-    [['test', '--model', 'gpt-5'], /^mrouter: --model: Model "gpt-5" is not routable\./],
+    [['test', '--model', 'other-model'], /^mrouter: --model: Model "other-model" is not routable\./],
   ]) {
     const e = await mr(/** @type {string[]} */ (args));
     assert.equal(e.code, 2);
@@ -360,7 +360,7 @@ test('test -m/--model checks one model on the provider it routes to; bad provide
 });
 
 test('usage: per-model rows marked exact / est / unknown / ≥ partial, a totals row, and --json', async () => {
-  for (const m of ['vendor/usage-fake-ok', 'claude-opus-4-6', 'claude-usage-fake-ok', 'gemini-2.5-pro']) {
+  for (const m of ['vendor/usage-fake-ok:free', 'claude-opus-4-6', 'claude-usage-fake-ok', 'gemini-2.5-pro']) {
     const r = await mr(['ask', '-m', m, 'hi']);
     assert.equal(r.code, 0, r.stderr);
   }
@@ -374,7 +374,7 @@ test('usage: per-model rows marked exact / est / unknown / ≥ partial, a totals
   }
   await waitForJson(stack.url, '/control/usage?days=1', (u) => {
     const byModel = Object.fromEntries(u.models.map((/** @type {any} */ m) => [m.model, m.requests]));
-    return byModel['gemini-2.5-pro'] === 2 && byModel['vendor/usage-fake-ok'] === 1 && byModel['claude-opus-4-6'] === 1 && byModel['claude-usage-fake-ok'] === 1;
+    return byModel['gemini-2.5-pro'] === 2 && byModel['vendor/usage-fake-ok:free'] === 1 && byModel['claude-opus-4-6'] === 1 && byModel['claude-usage-fake-ok'] === 1;
   });
 
   const r = await mr(['usage', '--days', '1']);
@@ -384,7 +384,7 @@ test('usage: per-model rows marked exact / est / unknown / ≥ partial, a totals
   assert.deepEqual(rows[1], ['PROVIDER', 'MODEL', 'REQUESTS', 'ERRORS', 'PROMPT', 'COMPLETION', 'CACHED', 'COST']);
   /** @param {string} model */
   const row = (model) => rows.find((x) => x[1] === model);
-  assert.deepEqual(row('vendor/usage-fake-ok'), ['openrouter', 'vendor/usage-fake-ok', '1', '0', '1,000', '200', '100', '$0.001230 exact']);
+  assert.deepEqual(row('vendor/usage-fake-ok:free'), ['openrouter', 'vendor/usage-fake-ok:free', '1', '0', '1,000', '200', '100', '$0.001230 exact']);
   assert.deepEqual(row('claude-opus-4-6'), ['claude', 'claude-opus-4-6', '1', '0', '2,500', '50', '2,000', '$0.005250 est']);
   assert.deepEqual(row('claude-usage-fake-ok'), ['claude', 'claude-usage-fake-ok', '1', '0', '2,500', '50', '2,000', 'unknown']);
   assert.deepEqual(row('gemini-2.5-pro'), ['gemini', 'gemini-2.5-pro', '2', '0', '1,200', '300', '200', '≥ $0.004275 partial']);
@@ -395,7 +395,7 @@ test('usage: per-model rows marked exact / est / unknown / ≥ partial, a totals
   const json = JSON.parse((await mr(['usage', '--days', '1', '--json'])).stdout);
   const status = Object.fromEntries(json.models.map((/** @type {any} */ m) => [m.model, m.cost_status]));
   assert.deepEqual(
-    ['vendor/usage-fake-ok', 'claude-opus-4-6', 'claude-usage-fake-ok', 'gemini-2.5-pro'].map((m) => status[m]),
+    ['vendor/usage-fake-ok:free', 'claude-opus-4-6', 'claude-usage-fake-ok', 'gemini-2.5-pro'].map((m) => status[m]),
     ['exact', 'estimated', 'unknown', 'partial'],
   );
   assert.equal(json.totals.cost_status, 'partial');

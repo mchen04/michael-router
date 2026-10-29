@@ -96,19 +96,18 @@ export function createAuthenticator({ passwordHash = null, password = null, veri
   const cacheKey = randomBytes(32);
   const digest = (/** @type {string} */ value) => createHmac('sha256', cacheKey).update(value).digest();
   const configured = password ? digest(password) : null;
-  /** @type {string[]} */
+  /** @type {Buffer[]} */
   const verified = [];
   return {
     /** @param {string} presented */
     async check(presented) {
       const presentedDigest = digest(presented);
-      const tag = presentedDigest.toString('base64url');
-      if (verified.includes(tag)) return true;
+      if (verified.some((entry) => timingSafeEqual(entry, presentedDigest))) return true;
       const ok = configured
         ? timingSafeEqual(presentedDigest, configured)
         : await verify(/** @type {PasswordHash} */ (passwordHash), presented);
       if (ok) {
-        verified.push(tag);
+        verified.push(presentedDigest);
         if (verified.length > CACHE_SIZE) verified.shift();
       }
       return ok;

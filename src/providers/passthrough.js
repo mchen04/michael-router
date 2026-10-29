@@ -1,5 +1,6 @@
 // Gemini and OpenRouter pass-through specifics (DESIGN §5.4). Request bodies are forwarded as the
 // client sent them, except that a streaming Gemini request gets `stream_options.include_usage`.
+import { GatewayError } from '../http.js';
 import { serializeComment, serializeEvent } from '../sse.js';
 import { normalizeUsage } from '../usage.js';
 
@@ -64,13 +65,29 @@ export const gemini = {
   usage: geminiUsage,
 };
 
+export const openai = {
+  chatPath: '/v1/chat/completions',
+  authHeaders: bearer,
+  verifyRequest: (baseUrl, key) => ({ url: `${baseUrl}/v1/models`, headers: bearer(key) }),
+  keyInvalid: () => false,
+  prepare: gemini.prepare,
+  usage: normalizeUsage,
+};
+
 /** @type {PassthroughProvider} */
 export const openrouter = {
   chatPath: '/api/v1/chat/completions',
   authHeaders: bearer,
   verifyRequest: (baseUrl, key) => ({ url: `${baseUrl}/api/v1/key`, headers: bearer(key) }),
   keyInvalid: () => false,
-  prepare: (body, bytes) => ({ payload: bytes, stream: body.stream === true, stripUsageOnly: false }),
+  prepare(body) {
+    if (['models', 'route', 'plugins', 'preset'].some((name) => Object.hasOwn(body, name))) {
+      throw new GatewayError(400, 'model_not_allowed', 'OpenRouter model fallbacks, routing overrides, presets and paid plugins are disabled.');
+    }
+    const provider = isObject(body.provider) ? body.provider : {};
+    const payload = JSON.stringify({ ...body, models: [body.model], provider: { ...provider, allow_fallbacks: false, max_price: { prompt: 0, completion: 0, request: 0, image: 0 } } });
+    return { payload, stream: body.stream === true, stripUsageOnly: false };
+  },
   usage: normalizeUsage,
 };
 

@@ -2,7 +2,7 @@
   "name": "michael-router",
   "version": "0.1.0",
   "private": true,
-  "description": "Private, password-protected, OpenAI-compatible gateway for Claude, Gemini and OpenRouter on Vercel.",
+  "description": "Private, password-protected, OpenAI-compatible gateway for Claude, Gemini, OpenRouter and OpenAI on Vercel.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mchen04/michael-router.git"

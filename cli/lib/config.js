@@ -15,7 +15,7 @@ const FILE_MODE = 0o600;
 const MAX_FILE_BYTES = 64 * 1024;
 
 /**
- * @typedef {{dir: string, config: string, credentials: string}} Paths
+ * @typedef {{dir: string, config: string, credentials: string, adminCredentials: string}} Paths
  */
 
 /** @param {Record<string, string | undefined>} env @returns {Paths} */
@@ -23,7 +23,7 @@ export function configPaths(env) {
   const xdg = env.XDG_CONFIG_HOME;
   const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(env.HOME || os.homedir(), '.config');
   const dir = path.join(base, 'michael-router');
-  return { dir, config: path.join(dir, 'config.json'), credentials: path.join(dir, 'credentials') };
+  return { dir, config: path.join(dir, 'config.json'), credentials: path.join(dir, 'credentials'), adminCredentials: path.join(dir, 'admin-credentials') };
 }
 
 /** Router passwords travel in a header: printable ASCII without leading or trailing spaces. @param {string} p */
@@ -146,3 +146,7 @@ export async function fileMode(file) {
     return null;
   }
 }
+
+export const readAdminCredentials = (paths, warn) => readCredentials({ ...paths, credentials: paths.adminCredentials }, warn);
+export const writeAdminCredentials = (paths, password) => atomicWrite(paths, paths.adminCredentials, password);
+export const deleteAdminCredentials = (paths) => deleteCredentials({ ...paths, credentials: paths.adminCredentials });

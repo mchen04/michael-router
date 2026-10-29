@@ -7,13 +7,14 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 
 - **Base URL**: `https://<host>/v1`, where `<host>` is your deployment's domain. Any client that
   speaks OpenAI Chat Completions can use it by setting the base URL and API key.
-- **Authentication**: `Authorization: Bearer <router password>` on every request except the
+- **Authentication**: `Authorization: Bearer <password>` on every request except the
   landing page. This is what OpenAI SDKs send for `api_key`. No other scheme is accepted
   (`x-api-key`, Basic and an empty bearer count as no credential).
-- **Provider keys stay on the server.** Clients never send Anthropic, Gemini or OpenRouter keys;
+  `/v1/*` accepts the shared user password or admin password. `/control/*` accepts only the admin password.
+- **Provider keys stay on the server.** Clients never send Anthropic, Gemini, OpenRouter or OpenAI keys;
   the gateway uses the key configured for the provider (a key stored with `mrouter keys set`
   overrides the environment variable).
-- No CORS headers are sent; browsers are not supported clients.
+- No CORS headers are sent. Foreign `Origin` and `Sec-Fetch-Site: cross-site` requests return 403 after authentication.
 
 | Method and path | Purpose |
 |-----------------|---------|
@@ -25,6 +26,10 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 | `DELETE /control/keys/:provider` | Remove the override (falls back to the environment key) |
 | `GET /control/usage?days=N` or `?since=YYYY-MM-DD` | Usage and cost per provider and model (UTC days, at most 400) |
 | `GET /control/errors?limit=N&kind=auth\|upstream\|gateway` | Recent events, newest first (the newest 200 are kept) |
+
+Missing credentials return 401 even when server configuration is invalid.
+Configuration details require a verified admin password and a working limiter store.
+If authentication cannot run, a presented credential receives a generic 503 without configuration details.
 
 Unknown paths under `/v1/` and `/control/` answer 404 and wrong methods 405, but only after
 authentication, so the route table cannot be probed without the password.
@@ -39,7 +44,7 @@ authentication, so the route table cannot be probed without the password.
   "region": "<function region or null>",
   "instance": { "started_at": "<ISO time>", "age_s": 12, "cold": false },
   "store": { "kind": "postgres", "latency_ms": 3.2, "schema_version": 1 },
-  "providers": { "claude": { "configured": true }, "gemini": { "configured": true }, "openrouter": { "configured": false } }
+  "providers": { "claude": { "configured": true }, "gemini": { "configured": true }, "openrouter": { "configured": false }, "openai": { "configured": true } }
 }
 ```
 
@@ -69,12 +74,14 @@ configured: true, source: "store", updated_at}`.
 
 | Rule | Provider | Example |
 |------|----------|---------|
-| contains `/` | `openrouter` (name forwarded unchanged) | `openrouter/auto`, `anthropic/claude-sonnet-4-6`, `google/gemini-2.5-flash-lite` |
+| contains `/` | `openrouter` (name forwarded unchanged) | `openrouter/free`, `vendor/model:free` |
 | starts with `claude-` | `claude` (Anthropic Messages API, translated) | `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | starts with `gemini-` | `gemini` (Gemini's OpenAI-compatible endpoint) | `gemini-2.5-flash` |
-| anything else | 400 `model_not_routable` | `gpt-5` |
+| starts with `gpt-` or matches `^o\d` | `openai` | `gpt-6-luna`, `o3`, `o4-mini` |
+| anything else | 400 `model_not_routable` | `unknown-model` |
 
-Model names are not checked against a list: any name a provider accepts works. `/v1/models`
+OpenRouter requires `:free` at the end, or exactly `openrouter/free`; other names return 400 `model_not_allowed`.
+Model names are not checked against the price list: any name a provider accepts works. `/v1/models`
 lists the models the gateway has metadata and prices for.
 
 ## 3. Chat completions
@@ -90,17 +97,42 @@ What every provider route shares:
 - The upstream timeout is 295 s for the whole response, including the stream.
 - A client disconnect aborts the upstream request.
 
-### 3.1 Gemini and OpenRouter (pass-through)
+### 3.1 OpenAI, Gemini and OpenRouter
 
-The request body is forwarded byte for byte, so every field the provider's OpenAI-compatible
-endpoint supports works as documented by that provider (tools, `response_format`,
-`reasoning_effort`, provider-specific extras). One exception: for `gemini` with `stream: true`
-the gateway sets `stream_options.include_usage = true` so it can record usage; if the client did
-not ask for usage itself, the usage-only chunk (`choices: []`) is removed from what it receives.
+OpenAI forwards to `POST https://api.openai.com/v1/chat/completions` by default.
+Set `OPENAI_BASE_URL` to override the server origin.
+OpenAI and Gemini preserve request bytes except when streaming usage is requested internally.
+For streams, the router sets `stream_options.include_usage = true` and removes unrequested usage-only chunks.
 
-Non-streaming success responses are the provider's bytes, status and `content-type`, unchanged.
-A 200 response whose body is an error object without `choices` (OpenRouter does this) is turned
-into an error response (§6).
+OpenRouter accepts only `:free` names and `openrouter/free`.
+It rejects `models`, `route`, `preset` and `plugins` with 400 `model_not_allowed`.
+It sets `models: [model]` and `provider.allow_fallbacks: false`.
+It overrides `provider.max_price` with zero for `prompt`, `completion`, `request` and `image`.
+Other provider preferences remain intact.
+These fields follow [OpenRouter provider selection](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), checked on 2026-10-29.
+
+Success responses preserve status and content type.
+The router scrubs known secrets from JSON values, error codes, headers and stream events.
+A 200 response containing only an error becomes an error response.
+
+### 3.1.1 Fallback keys
+
+| Provider | Primary environment key | Fallback environment key |
+| --- | --- | --- |
+| Claude | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY_2` |
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_API_KEY_2` |
+| Gemini | `GEMINI_API_KEY` | `GEMINI_API_KEY_2` |
+| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY_2` |
+
+A stored key replaces slot 1. Slot 2 always comes from the fallback environment variable.
+A fallback alone does not configure a provider.
+The router retries once when slot 1 returns HTTP 401, 402, 403 or 429 with clear billing evidence.
+This includes credit, billing, payment or balance errors, `insufficient_quota`, and exhausted, daily or monthly quota errors.
+A generic rate limit, generic quota limit, invalid key, network error or timeout does not trigger a retry.
+A 200 JSON error with one of those numeric statuses follows the same rule.
+Both attempts share the 295-second deadline.
+The router never retries an event stream, even if its first event is an error.
+No primary response bytes reach the client before a retry.
 
 ### 3.2 Claude (translated to the Messages API)
 
@@ -161,7 +193,7 @@ off for tool loops, or use the Anthropic Messages API directly when you need bot
 With `stream: true` the response is `text/event-stream` with status 200 and events are relayed
 as the provider produces them (no buffering).
 
-- `gemini`, `openrouter`: the provider's events, re-serialized (comment lines such as
+- `openai`, `gemini`, `openrouter`: the provider's events, re-serialized (comment lines such as
   `: OPENROUTER PROCESSING` are kept).
 - `claude`: OpenAI `chat.completion.chunk` events, all with the same `id`, `created` and `model`.
   The first chunk is `delta: {role: "assistant", content: ""}`; text arrives as
@@ -253,6 +285,14 @@ Events keep this metadata only, never provider or request text: a provider's err
 quote the prompt. The client that sent the request receives that message, scrubbed of secrets,
 in its error response (§6); events and logs do not keep it.
 
+Slot counters `key_slot_1_requests` and `key_slot_2_requests` count the final attempt for each request.
+They appear in model, provider and total usage rows when nonzero.
+They reveal neither key values nor fingerprints.
+
+OpenAI estimates use Standard token prices, including cached input and long-context tiers above 272,000 prompt tokens.
+Cache writes use the 30-minute rate when reported; other service tiers, regional premiums and 12-hour writes can differ.
+The source and fetch date are in `src/pricing.json`.
+
 ## 6. Errors
 
 Errors are never a 2xx and always use the OpenAI envelope:
@@ -271,6 +311,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 400 | `invalid_json` | body is not a JSON object | no |
 | 400 | `model_required` | no `model` | no |
 | 400 | `invalid_model` | `model` breaks the naming rule (§2) | no |
+| 400 | `model_not_allowed` | OpenRouter model or request could use paid services | no |
 | 400 | `model_not_routable` | no routing rule matches | no |
 | 400 | `invalid_parameter` | a field has the wrong shape (messages, tools, `max_tokens`, …) | no |
 | 400 | `unsupported_parameter` | Claude: a feature with no faithful translation (§3.2) | no |
@@ -280,6 +321,8 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 400 | `key_rejected` | `PUT /control/keys` with `verify`: the provider rejected the key; it was not stored | no: check the key |
 | 401 | `missing_credentials` | no bearer credential | no: send the password |
 | 401 | `invalid_credentials` | wrong password | no: repeated failures slow down and then block the source |
+| 403 | `admin_required` | shared user password sent to a control route | no: use the admin password |
+| 403 | `cross_origin_forbidden` | foreign browser origin or cross-site fetch | no |
 | 404 | `not_found` | unknown path | no |
 | 405 | `method_not_allowed` | wrong method (`Allow` lists the right one) | no |
 | 413 | `payload_too_large` | body over 4 MiB (16 KiB for control routes) | no |
@@ -287,7 +330,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 429 | `source_blocked` | too many wrong passwords: the source is blocked, even for the right password | after `Retry-After` |
 | 429 | `auth_busy` | too many concurrent authentications from this source | after `Retry-After` (1 s) |
 | 500 | `internal_error` | unexpected gateway failure | maybe |
-| 503 | `server_misconfigured` | required configuration missing or invalid (the message names the variables) | no: fix the deployment |
+| 503 | `server_misconfigured` | configuration missing or invalid; variable names require successful authentication | no: fix the deployment |
 | 503 | `store_unavailable` | the store failed, did not connect within 5 s, answered slower than 1.5 s, or its schema is missing or older than the code; the request was refused | yes, with backoff |
 | 503 | `provider_not_configured` | the routed provider has no key | no: configure a key |
 | 502 | `provider_auth_failed` | the provider rejected the router's key for it (an upstream 401, or a Gemini 400 saying "API key not valid" or "API key expired", or with reason `API_KEY_INVALID`) | no: fix the provider key |
@@ -380,7 +423,7 @@ import OpenAI from 'openai';
 
 const client = new OpenAI({ baseURL: 'https://<host>/v1', apiKey: process.env.MROUTER_PASSWORD });
 const res = await client.chat.completions.create({
-  model: 'openrouter/auto',
+  model: 'openrouter/free',
   messages: [{ role: 'user', content: 'Hello' }],
 });
 console.log(res.choices[0].message.content, res.usage);
@@ -417,3 +460,19 @@ selects a behavior, for example `claude-fake-429`, `gemini-fake-midstream-error`
 To run against PostgreSQL instead of the memory store, replace `ROUTER_STORE=memory` with
 `DATABASE_URL=<URL of a local database>` and migrate that database first (`DEPLOY.md` step 3.1).
 Outside production, a URL without TLS is accepted only for a loopback host or a unix socket.
+
+## Owner access
+
+Set `ROUTER_ADMIN_PASSWORD_HASH` or `ROUTER_ADMIN_PASSWORD`, never both.
+The format, minimum length, newline handling and verification rules match the user credential.
+Use distinct passwords; a credential that matches the user password cannot gain admin access.
+Admin configuration errors affect `/control/*` only.
+Missing admin configuration returns 503 `server_misconfigured`, naming the admin variables.
+A request with no bearer credential still returns 401.
+
+Every control path and rewrite requires admin access, including health, key verification, usage and errors.
+The shared user password returns 403 `admin_required` without recording a failed-password attempt.
+Unknown passwords use the same source limiter for both roles.
+The admin password also works for chat and the model list.
+All success and failure responses redact both credentials.
+The health endpoint exposes no public or user-level health details.

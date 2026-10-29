@@ -380,3 +380,16 @@ test('usage errors exit 2 without echoing arguments or literals', { skip }, asyn
   assert.match(short.stderr, /stdin line 2: literals must be at least 8 characters/);
   assertNoPlantedText(value.stderr + short.stderr + short.stdout);
 });
+
+test('finds OpenAI project, service account and legacy keys without printing values', { skip }, async () => {
+  const repo = path.join(base, 'openai');
+  await mkdir(repo);
+  git(repo, ['init', '-q', '-b', 'main']);
+  const keys = [join('sk-', 'proj-', b64url(80)), join('sk-', 'svcacct-', b64url(80)), join('sk-', randomBytes(24).toString('hex'))];
+  await put(repo, { 'keys.txt': keys.join('\n') });
+  const result = await runScan(repo, []);
+  assert.equal(result.code, 1, result.stderr);
+  assert.equal(findingLines(result.stdout).length, 3);
+  assert.ok(findingLines(result.stdout).every((line) => line.endsWith('openai-key')));
+  for (const key of keys) assert.ok(!result.stdout.includes(key) && !result.stderr.includes(key));
+});

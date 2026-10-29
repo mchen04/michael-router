@@ -36,8 +36,15 @@ beforeEach(() => fake.reset());
 /** @param {Record<string, string>} [env] @param {Parameters<typeof makeHarness>[0]} [options] */
 const harness = (env = {}, options = {}) => makeHarness({ ...options, env: { ...fake.env, ...ENV_KEYS, ...env } });
 /** @param {any} h @param {Record<string, unknown>} body @param {Record<string, string>} [headers] */
-const chat = (h, body, headers = {}) =>
-  h.call('/v1/chat/completions', { method: 'POST', headers: { ...bearer(), ...headers }, body: JSON.stringify({ messages: MESSAGES, ...body }) });
+const chat = async (h, body, headers = {}) => {
+  const scenario = /vendor\/fake-([a-z0-9-]+):free$/.exec(String(body.model))?.[1];
+  if (scenario) fake.setDefaults({ scenario });
+  try {
+    return await h.call('/v1/chat/completions', { method: 'POST', headers: { ...bearer(), ...headers }, body: JSON.stringify({ messages: MESSAGES, ...body }) });
+  } finally {
+    if (scenario) fake.setDefaults({ scenario: 'ok' });
+  }
+};
 /** @param {string} text */
 function sse(text) {
   const p = createSSEParser();
@@ -79,11 +86,11 @@ test('validation before forwarding: invalid JSON, model rules, 4 MiB limit, prov
     [unconfigured, '[1]', 400, 'invalid_json', null],
     [unconfigured, '{"messages":[]}', 400, 'model_required', null],
     [unconfigured, '{"model":"claude x"}', 400, 'invalid_model', null],
-    [unconfigured, '{"model":"gpt-5"}', 400, 'model_not_routable', null],
+    [unconfigured, '{"model":"other-model"}', 400, 'model_not_routable', null],
     [unconfigured, JSON.stringify({ model: 'claude-haiku-5-5', pad: 'x'.repeat(4 * 1024 * 1024) }), 413, 'payload_too_large', null],
     [unconfigured, '{"model":"claude-haiku-5-5"}', 503, 'provider_not_configured', 'claude'],
     [unconfigured, '{"model":"gemini-2.5-flash"}', 503, 'provider_not_configured', 'gemini'],
-    [unconfigured, '{"model":"openrouter/auto"}', 503, 'provider_not_configured', 'openrouter'],
+    [unconfigured, '{"model":"openrouter/free"}', 503, 'provider_not_configured', 'openrouter'],
     [configured, claudeBody({ response_format: { type: 'json_object' } }), 400, 'unsupported_parameter', 'claude'],
     [configured, claudeBody({ n: 3 }), 400, 'unsupported_parameter', 'claude'],
     [configured, claudeBody({ messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: {} }] }] }), 400, 'unsupported_content', 'claude'],
@@ -94,12 +101,12 @@ test('validation before forwarding: invalid JSON, model rules, 4 MiB limit, prov
     assert.deepEqual([r.json.error.type, r.json.error.code, r.json.error.param], ['gateway_error', code, null]);
     assert.deepEqual([r.headers.get('x-router-error-source'), r.headers.get('x-router-provider')], ['gateway', provider], code);
   }
-  assert.match(String((await post(unconfigured, '{"model":"openrouter/auto"}')).json.error.message), /OPENROUTER_API_KEY/);
+  assert.match(String((await post(unconfigured, '{"model":"openrouter/free"}')).json.error.message), /OPENROUTER_API_KEY/);
   assert.equal(fake.requests.length, 0);
   const gateway = await events(unconfigured, 'gateway');
   assert.deepEqual(
     gateway.filter((/** @type {any} */ e) => e.code === 'provider_not_configured').map((/** @type {any} */ e) => `${e.provider}:${e.model}`),
-    ['openrouter:openrouter/auto', 'openrouter:openrouter/auto', 'gemini:gemini-2.5-flash', 'claude:claude-haiku-5-5'],
+    ['openrouter:openrouter/free', 'openrouter:openrouter/free', 'gemini:gemini-2.5-flash', 'claude:claude-haiku-5-5'],
   );
 });
 
@@ -115,7 +122,7 @@ test('upstream requests carry only content-type, the provider auth header and us
     'x-router-cache': 'on',
     'http-referer': 'https://client.example',
   };
-  for (const model of ['claude-haiku-5-5', 'gemini-2.5-flash', 'openrouter/auto']) {
+  for (const model of ['claude-haiku-5-5', 'gemini-2.5-flash', 'openrouter/free']) {
     assert.equal((await chat(h, { model }, clientHeaders)).status, 200, model);
   }
   assert.equal(fake.requests.length, 3);
@@ -147,20 +154,21 @@ test('the effective key is used: a stored override beats the env key; deleting i
 test('pass-through non-streaming: request bytes forwarded unchanged; upstream body bytes, status and content-type returned unchanged', async () => {
   const h = await harness();
   for (const [model, provider, path] of [
-    ['google/gemini-2.5-flash-lite', 'openrouter', '/api/v1/chat/completions'],
+    ['google/gemini-2.5-flash-lite:free', 'openrouter', '/api/v1/chat/completions'],
     ['gemini-2.5-flash-lite', 'gemini', '/v1beta/openai/chat/completions'],
   ]) {
     const raw = `{ "model" : "${model}",\n  "messages": ${JSON.stringify(MESSAGES)}, "seed": 7, "vendor_extra": {"a": [1, 2]} }`;
     const r = await h.call('/v1/chat/completions', { method: 'POST', headers: bearer(), body: raw });
     assert.equal(r.status, 200);
-    assert.equal(fake.requests.at(-1)?.raw, raw, `${provider}: request bytes unchanged`);
+    if (provider === 'gemini') assert.equal(fake.requests.at(-1)?.raw, raw, `${provider}: request bytes unchanged`);
+    else assert.equal(fake.requests.at(-1)?.body.provider.max_price.prompt, 0);
     const key = provider === 'gemini' ? ENV_KEYS.GEMINI_API_KEY : ENV_KEYS.OPENROUTER_API_KEY;
     const direct = await fetch(`${fake.url}/${provider}${path}`, { method: 'POST', headers: { authorization: `Bearer ${key}` }, body: raw });
     assert.equal(r.text, await direct.text(), `${provider}: response bytes unchanged`);
     assert.equal(r.headers.get('content-type'), direct.headers.get('content-type'));
     assert.equal(r.headers.get('x-router-provider'), provider);
   }
-  assert.ok((await chat(h, { model: 'google/gemini-2.5-flash-lite' })).text.startsWith('\n'), 'OpenRouter leading whitespace kept');
+  assert.ok((await chat(h, { model: 'google/gemini-2.5-flash-lite:free' })).text.startsWith('\n'), 'OpenRouter leading whitespace kept');
 });
 
 test('server-timing: auth, store, upstream and gw on pass-through and Claude routes, streaming or not; gw is measured before the first byte', async () => {
@@ -222,21 +230,21 @@ test('§5.4 error table for upstream HTTP errors: status, code, upstream_status,
   /** @type {[string, number, string, number, RegExp?][]} model, status, code, upstream_status, message */
   const cases = [
     ['claude-fake-401', 502, 'provider_auth_failed', 401],
-    ['vendor/fake-invalid-key', 502, 'provider_auth_failed', 401],
+    ['vendor/fake-invalid-key:free', 502, 'provider_auth_failed', 401],
     ['gemini-fake-invalid-key', 502, 'provider_auth_failed', 400, /rejected the router's API key.*API key not valid/],
     ['gemini-fake-expired-key', 502, 'provider_auth_failed', 400, /rejected the router's API key.*API key expired/],
     ['gemini-fake-400', 400, 'INVALID_ARGUMENT', 400],
     ['claude-fake-400', 400, 'invalid_request_error', 400],
-    ['vendor/fake-402', 402, 'provider_billing', 402],
+    ['vendor/fake-402:free', 402, 'provider_billing', 402],
     ['claude-fake-403', 403, 'provider_forbidden', 403],
     ['gemini-fake-403', 403, 'provider_forbidden', 403],
     ['gemini-fake-429', 429, 'provider_rate_limited', 429],
     ['claude-fake-429', 429, 'provider_rate_limited', 429],
     ['claude-fake-404', 404, 'not_found_error', 404],
-    ['vendor/fake-500', 500, 'provider_error', 500],
+    ['vendor/fake-500:free', 500, 'provider_error', 500],
     ['gemini-fake-503', 503, 'UNAVAILABLE', 503],
     ['claude-fake-529', 529, 'overloaded_error', 529],
-    ['vendor/fake-200-error', 502, 'provider_error', 200],
+    ['vendor/fake-200-error:free', 502, 'provider_error', 200],
   ];
   for (const [model, status, code, upstream, message = /./] of cases) {
     for (const stream of [false, true]) {
@@ -279,7 +287,7 @@ test('a provider redirect is never followed: 502, and neither the key nor the pr
   const trap = await startRedirectTrap();
   try {
     const h = await harness({ ANTHROPIC_BASE_URL: trap.url, OPENROUTER_BASE_URL: trap.url });
-    for (const model of ['claude-haiku-5-5', 'openrouter/auto']) {
+    for (const model of ['claude-haiku-5-5', 'openrouter/free']) {
       const r = await chat(h, { model, stream: true });
       assert.deepEqual([r.status, r.json.error.code], [502, 'upstream_unreachable'], model);
       assert.match(r.json.error.message, /redirect/);
@@ -297,7 +305,7 @@ test('upstream error messages are scrubbed: a provider echoing our key never lea
   for (const [model, key] of [
     ['claude-fake-echo-auth', ENV_KEYS.ANTHROPIC_API_KEY],
     ['gemini-fake-echo-auth', ENV_KEYS.GEMINI_API_KEY],
-    ['vendor/fake-echo-auth', ENV_KEYS.OPENROUTER_API_KEY],
+    ['vendor/fake-echo-auth:free', ENV_KEYS.OPENROUTER_API_KEY],
   ]) {
     const plain = await chat(h, { model });
     assert.equal(plain.status, 400);
@@ -349,14 +357,14 @@ test('streaming Gemini: include_usage injected upstream; the usage-only chunk is
 
 test('streaming OpenRouter: comments relayed, the final usage chunk kept, usage.cost -> exact', async () => {
   const h = await harness();
-  const r = await chat(h, { model: 'openrouter/auto', stream: true });
+  const r = await chat(h, { model: 'openrouter/free', stream: true });
   const items = sse(r.text);
   assert.deepEqual(items[0], { comment: ' OPENROUTER PROCESSING' });
   assert.deepEqual(items.at(-1), { data: '[DONE]' });
   const last = chunksOf(r.text).at(-1);
   assert.deepEqual([last.choices[0].finish_reason, last.usage.cost], ['stop', 0.00123]);
   assert.equal(fake.requests.at(-1)?.body.stream_options, undefined, 'nothing injected for OpenRouter');
-  const row = (await usageRows(h)).byModel['openrouter\topenrouter/auto'];
+  const row = (await usageRows(h)).byModel['openrouter\topenrouter/free'];
   assert.deepEqual([row.cost_exact, row.cost_nusd, row.reasoning_tokens, row.cached_tokens, row.cost_status], [1, 1230000, 30, 100, 'exact']);
 });
 
@@ -368,11 +376,11 @@ test('errors inside a 200 stream: one normalized error chunk, no [DONE] (a trail
     ['claude-fake-midstream-error-done', 'overloaded_error'],
     ['gemini-fake-midstream-error', 'INTERNAL'],
     ['gemini-fake-midstream-error-done', 'INTERNAL'],
-    ['vendor/fake-midstream-error', 'provider_error'],
-    ['vendor/fake-midstream-error-done', 'provider_error'],
+    ['vendor/fake-midstream-error:free', 'provider_error'],
+    ['vendor/fake-midstream-error-done:free', 'provider_error'],
     ['claude-fake-truncated', 'upstream_stream_incomplete'],
     ['gemini-fake-truncated', 'upstream_stream_incomplete'],
-    ['vendor/fake-truncated', 'upstream_stream_incomplete'],
+    ['vendor/fake-truncated:free', 'upstream_stream_incomplete'],
   ];
   for (const [model, code] of cases) {
     const r = await chat(h, { model, stream: true });
@@ -399,11 +407,11 @@ test('usage and cost aggregates: estimated (cached tokens, cache writes), exact,
   const h = await harness();
   await chat(h, { model: 'claude-haiku-5-5' });
   await chat(h, { model: 'claude-haiku-5-5', stream: true });
-  await chat(h, { model: 'google/gemini-2.5-flash-lite' });
+  await chat(h, { model: 'google/gemini-2.5-flash-lite:free' });
   await chat(h, { model: 'gemini-2.5-flash-lite' });
   await chat(h, { model: 'claude-sonnet-4-5' }); // routable, not in the price table
   await chat(h, { model: 'claude-fake-no-usage' });
-  await chat(h, { model: 'vendor/fake-no-usage', stream: true });
+  await chat(h, { model: 'vendor/fake-no-usage:free', stream: true });
   const u = await usageRows(h);
   const haiku = u.byModel['claude\tclaude-haiku-5-5'];
   assert.deepEqual(
@@ -411,11 +419,11 @@ test('usage and cost aggregates: estimated (cached tokens, cache writes), exact,
     [2, 5000, 4000, 800, 100, 2 * 105000, 'estimated'],
   );
   assert.equal(haiku.cost_usd, 0.00021);
-  assert.deepEqual([u.byModel['openrouter\tgoogle/gemini-2.5-flash-lite'].cost_status, u.byModel['openrouter\tgoogle/gemini-2.5-flash-lite'].cost_nusd], ['exact', 1230000]);
+  assert.deepEqual([u.byModel['openrouter\tgoogle/gemini-2.5-flash-lite:free'].cost_status, u.byModel['openrouter\tgoogle/gemini-2.5-flash-lite:free'].cost_nusd], ['exact', 1230000]);
   assert.equal(u.byModel['gemini\tgemini-2.5-flash-lite'].cost_nusd, 222000);
   const sonnet = u.byModel['claude\tclaude-sonnet-4-5'];
   assert.deepEqual([sonnet.prompt_tokens, sonnet.cost_nusd, sonnet.cost_unknown, sonnet.cost_status], [2500, 0, 1, 'unknown']);
-  for (const id of ['claude\tclaude-fake-no-usage', 'openrouter\tvendor/fake-no-usage']) {
+  for (const id of ['claude\tclaude-fake-no-usage', 'openrouter\tvendor/fake-no-usage:free']) {
     assert.deepEqual([u.byModel[id].usage_missing, u.byModel[id].cost_unknown, u.byModel[id].errors], [1, 1, 0], id);
   }
   assert.equal(u.totals.cost_status, 'partial');

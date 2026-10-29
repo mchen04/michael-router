@@ -11,7 +11,7 @@ import { normalizeAddress, sourceId } from '../../src/source.js';
 import { STORE_TIMEOUT_MS, StoreError } from '../../src/store/contract.js';
 import { createStore } from '../../src/store/index.js';
 import { createPostgresStore } from '../../src/store/postgres.js';
-import { PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, baseEnv, bearer } from '../helpers/fixtures.js';
+import { ADMIN_PASSWORD as PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, baseEnv, bearer } from '../helpers/fixtures.js';
 import { makeHarness } from '../helpers/harness.js';
 import { dumpRouterTables, generatedPassword, migrate, startPostgres, storeConfig, withClient } from '../helpers/postgres.js';
 

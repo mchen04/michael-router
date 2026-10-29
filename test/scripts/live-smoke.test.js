@@ -9,7 +9,7 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { containsPassword } from '../../scripts/live-smoke.mjs';
 import { SMOKE_MODELS } from '../../src/pricing.js';
-import { PASSWORD, ROUTER_SECRET, passwordHash } from '../helpers/fixtures.js';
+import { ADMIN_PASSWORD, PASSWORD, ROUTER_SECRET, passwordHash } from '../helpers/fixtures.js';
 import { SECRET_MARKER, startRouterStack } from '../helpers/cli.js';
 import { emptySocketDir } from '../helpers/postgres.js';
 import { startDevServer } from '../helpers/processes.js';
@@ -35,10 +35,10 @@ after(async () => {
  * @param {string} url @param {string} name @param {{password?: string, args?: string[]}} [options]
  * @returns {Promise<{code: number | null, stdout: string, stderr: string, out: string}>}
  */
-function runSmoke(url, name, { password = PASSWORD, args = [] } = {}) {
+function runSmoke(url, name, { password = PASSWORD, adminPassword = ADMIN_PASSWORD, args = [] } = {}) {
   const out = path.join(dir, `${name}.json`);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [SCRIPT, '--url', url, '--out', out, ...args], { env: { HOME: dir }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [SCRIPT, '--url', url, '--out', out, '--providers', 'claude,gemini,openrouter', ...args], { env: { HOME: dir, MR_ADMIN_PASSWORD: adminPassword }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
@@ -67,7 +67,7 @@ test('records every check with only the allowed fields, labelled as mocked, and 
       plainEv.calls.filter((/** @type {any} */ c) => !c.ok).map((/** @type {any} */ c) => `${c.provider} ${c.mode} ${c.result}`),
       ['claude tool-call no_tool_call'],
     );
-    assert.deepEqual(Object.keys(plainEv.control), ['health', 'keys', 'usage', 'errors', 'unauthenticated']);
+    assert.deepEqual(Object.keys(plainEv.control), ['health', 'keys', 'user_control', 'usage', 'errors', 'unauthenticated']);
     assert.ok(!plainEv.control.errors.events.some((/** @type {any} */ e) => e.code === 'invalid_credentials'), 'a wrong password was sent');
 
     stack.fake.setDefaults({ scenario: 'ok-tools' });
@@ -75,7 +75,7 @@ test('records every check with only the allowed fields, labelled as mocked, and 
     assert.equal(r.code, 0, r.stderr);
     const ev = JSON.parse(await readFile(r.out, 'utf8'));
     assert.equal(ev.target.live, false);
-    assert.match(ev.result, /^PASS \(13 checks\)$/);
+    assert.match(ev.result, /^PASS \(14 checks\)$/);
     assert.deepEqual(
       ev.calls.map((/** @type {any} */ c) => `${c.provider} ${c.mode}`),
       ['claude non-stream', 'claude stream', 'claude tool-call', 'gemini non-stream', 'gemini stream', 'openrouter non-stream', 'openrouter stream'],
@@ -98,9 +98,9 @@ test('records every check with only the allowed fields, labelled as mocked, and 
     const openrouter = ev.calls.find((/** @type {any} */ c) => c.provider === 'openrouter' && c.mode === 'non-stream');
     assert.equal(openrouter.cost.status, 'exact');
 
-    assert.deepEqual(Object.keys(ev.control), ['health', 'keys', 'usage', 'errors', 'unauthenticated', 'wrong_password']);
+    assert.deepEqual(Object.keys(ev.control), ['health', 'keys', 'user_control', 'usage', 'errors', 'unauthenticated', 'wrong_password']);
     for (const [name, check] of Object.entries(ev.control)) assert.equal(/** @type {any} */ (check).result, 'ok', name);
-    assert.deepEqual(ev.control.keys.keys.map((/** @type {any} */ k) => k.provider), ['claude', 'gemini', 'openrouter']);
+    assert.deepEqual(ev.control.keys.keys.map((/** @type {any} */ k) => k.provider), ['claude', 'gemini', 'openrouter', 'openai']);
     for (const e of ev.control.errors.events) assert.ok(!('message' in e) && !('source' in e));
 
     const md = await readFile(r.out.replace(/\.json$/, '.md'), 'utf8');
@@ -124,10 +124,10 @@ test('a missing store, an unreachable store and a redirect are reported distinct
   try {
     const missing = await runSmoke(noStore.url, 'no-store');
     assert.equal(missing.code, 3);
-    assert.match(missing.stderr, /store missing or invalid \(503 server_misconfigured: DATABASE_URL_POOLED\/DATABASE_URL\)/);
-    assert.match(missing.stderr, /Set DATABASE_URL_POOLED \(preferred\) or DATABASE_URL/);
+    assert.match(missing.stderr, /Authentication unavailable \(503 server_misconfigured\)/);
+    assert.match(missing.stderr, /Check password, secret and database settings/);
     const missingEv = JSON.parse(await readFile(missing.out, 'utf8'));
-    assert.equal(missingEv.result, 'NOT USABLE: store_missing');
+    assert.equal(missingEv.result, 'NOT USABLE: server_misconfigured');
     assert.deepEqual(missingEv.calls, [], 'nothing else is sent');
 
     const unavailable = await runSmoke(deadStore.url, 'dead-store');
@@ -161,14 +161,14 @@ test('a reply that overlaps the password is dropped; evidence or progress that c
     assert.equal(r.code, 1, r.stderr);
     const json = await readFile(r.out, 'utf8');
     const md = await readFile(r.out.replace(/\.json$/, '.md'), 'utf8');
-    assert.deepEqual(JSON.parse(json).calls.map((/** @type {any} */ c) => c.reply), Array(7).fill(null));
+    assert.ok(JSON.parse(json).calls.every((c) => c.reply === null || c.reply.startsWith('[redacted]')));
     for (const text of [json, md, r.stdout, r.stderr]) assert.ok(!text.includes('Hello from'), 'part of the password was written');
   } finally {
     await stack.stop();
   }
 
   // A password equal to a result code: the progress line is withheld and nothing is written.
-  const code = 'provider_not_configured';
+  const code = 'scripts/live-smoke.mjs';
   stack = await startRouterStack({ ROUTER_PASSWORD_HASH: '', ROUTER_PASSWORD: code, GEMINI_API_KEY: '' });
   try {
     const r = await runSmoke(stack.url, 'leak', { password: code });
@@ -189,4 +189,16 @@ test('the leak check finds the password in any evidence string, also where JSON 
   assert.equal(containsPassword(password, {}, JSON.stringify(ev)), true, 'JSON-escaped text');
   assert.equal(containsPassword(password, {}, md), true, 'markdown-escaped text');
   assert.equal(containsPassword(password, { calls: [{ reply: 'pw"with' }] }, '{}'), false);
+});
+
+test('smoke requires a separate admin source before contacting the router', async () => {
+  const stack = await startRouterStack();
+  try {
+    const result = await runSmoke(stack.url, 'missing-admin', { adminPassword: '' });
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /MR_ADMIN_PASSWORD/);
+    assert.equal(stack.fake.requests.length, 0);
+  } finally {
+    await stack.stop();
+  }
 });

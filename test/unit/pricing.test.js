@@ -9,15 +9,15 @@ const usage = (u) => ({ prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0
 
 test('pricing.json: dated, sourced per provider, every entry well-formed; smoke models are listed', () => {
   assert.match(PRICING.updated, /^\d{4}-\d{2}-\d{2}$/);
-  assert.deepEqual(Object.keys(PRICING.sources).sort(), ['claude', 'gemini', 'openrouter']);
+  assert.deepEqual(Object.keys(PRICING.sources).sort(), ['claude', 'gemini', 'openai', 'openrouter']);
   for (const [id, e] of Object.entries(PRICING.models)) {
-    assert.ok(['claude', 'gemini', 'openrouter'].includes(e.provider), id);
+    assert.ok(['claude', 'gemini', 'openai', 'openrouter'].includes(e.provider), id);
     if (e.priced === false) continue;
     for (const f of /** @type {const} */ (['input', 'output', 'cache_read', 'cache_write'])) {
       assert.ok(e[f] === null || (typeof e[f] === 'number' && e[f] >= 0), `${id}.${f}`);
     }
     for (const f of e.assumed ?? []) assert.equal(typeof e[/** @type {'input'} */ (f)], 'number', `${id} assumed ${f}`);
-    assert.equal(typeof e.sampling, 'boolean', id);
+    if (e.provider !== 'openai') assert.equal(typeof e.sampling, 'boolean', id);
     if (e.provider === 'claude') assert.equal(e.cache_write, Math.round(e.input * 1.25 * 1e6) / 1e6, `${id} cache_write = 1.25 x input`);
   }
   for (const [provider, model] of Object.entries(SMOKE_MODELS)) assert.equal(PRICING.models[model]?.provider, provider);

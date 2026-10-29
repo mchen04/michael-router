@@ -46,7 +46,7 @@ test('routing examples go where the page says, and the CLI list is the mrouter c
     .split('data-provider="')
     .slice(1)
     .map((row) => ({ provider: row.slice(0, row.indexOf('"')), models: [...row.matchAll(/<code class="model">([^<]+)<\/code>/g)].map((m) => m[1]) }));
-  assert.deepEqual(rows.map((r) => r.provider), ['openrouter', 'claude', 'gemini', 'none']);
+  assert.deepEqual(rows.map((r) => r.provider), ['openrouter', 'claude', 'gemini', 'openai', 'none']);
   for (const { provider, models } of rows) {
     assert.ok(models.length, provider);
     for (const model of models) {

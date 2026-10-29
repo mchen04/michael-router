@@ -185,5 +185,7 @@ export function usageEntries({ provider, model, nowMs, error, billable, usage, u
 export function recordUsage(ctx, r) {
   if (!ctx.store) return;
   const nowMs = ctx.now();
-  ctx.waitUntil(ctx.store.addUsage(utcDay(nowMs), usageEntries({ ...r, nowMs }), { retainFromDay: retainFromDay(nowMs) }));
+  const entries = usageEntries({ ...r, nowMs }).map((entry) => ({ ...entry, model: ctx.redact ? ctx.redact(entry.model) : entry.model }));
+  if (ctx.keySlot) entries.push({ provider: r.provider, model: ctx.redact(r.model), metric: `key_slot_${ctx.keySlot}_requests`, value: 1 });
+  ctx.waitUntil(ctx.store.addUsage(utcDay(nowMs), entries, { retainFromDay: retainFromDay(nowMs) }));
 }

@@ -15,7 +15,7 @@ export function validateProviderKey(key) {
   return providerKeyProblem(key);
 }
 
-/** @param {unknown} id @returns {id is 'claude' | 'gemini' | 'openrouter'} */
+/** @param {unknown} id @returns {id is 'claude' | 'gemini' | 'openrouter' | 'openai'} */
 export function isProviderId(id) {
   return typeof id === 'string' && /** @type {readonly string[]} */ (PROVIDER_IDS).includes(id);
 }

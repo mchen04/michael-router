@@ -8,7 +8,7 @@ import { after, before, test } from 'node:test';
 import { startFakeProviders } from '../../dev/fake-providers.js';
 import { EXCEPTION_FIELDS, LOG_FIELDS } from '../../src/log.js';
 import { REDACTED } from '../../src/redact.js';
-import { ENV_KEYS, PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
+import { ENV_KEYS, ADMIN_PASSWORD as PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
 import { dumpRouterTables, generatedPassword, migrate, startPostgres } from '../helpers/postgres.js';
 import { startDevServer } from '../helpers/processes.js';
 
@@ -49,7 +49,7 @@ before(async () => {
       },
       ['--upstream-timeout-ms', '400'],
     ),
-    startDevServer({ ROUTER_PASSWORD: PLAIN_PASSWORD, ROUTER_SECRET, ROUTER_STORE: 'memory', ...ENV_KEYS, ...providers.env }),
+    startDevServer({ ROUTER_ADMIN_PASSWORD_HASH: '', ROUTER_ADMIN_PASSWORD: PLAIN_PASSWORD, ROUTER_PASSWORD: 'shared-friend-SENTINEL-password', ROUTER_SECRET, ROUTER_STORE: 'memory', ...ENV_KEYS, ...providers.env }),
   ]);
 });
 after(async () => {
@@ -87,6 +87,8 @@ async function run(url, steps, password) {
   /** @type {string[]} */
   const texts = [];
   for (const [i, { path, init = {}, auth = password, status }] of steps.entries()) {
+    const scenario = /vendor\/fake-([a-z0-9-]+):free/.exec(String(init.body))?.[1] ?? 'ok';
+    providers.setDefaults({ scenario });
     const headers = auth === null ? {} : { authorization: `Bearer ${auth}` };
     const res = await fetch(url + path, { ...init, headers });
     const text = await res.text();
@@ -127,20 +129,20 @@ test('no secret or prompt reaches logs, events or the store across the whole API
     { path: '/v1/chat/completions', init: chat('claude-haiku-5-5'), status: 200 },
     { path: '/v1/chat/completions', init: chat('claude-haiku-5-5', { stream: true, stream_options: { include_usage: true } }), status: 200 },
     { path: '/v1/chat/completions', init: chat('gemini-2.5-flash', { stream: true }), status: 200 },
-    { path: '/v1/chat/completions', init: chat('openrouter/auto', { stream: true }), status: 200 },
-    { path: '/v1/chat/completions', init: chat('google/gemini-2.5-flash-lite'), status: 200 },
+    { path: '/v1/chat/completions', init: chat('openrouter/free', { stream: true }), status: 200 },
+    { path: '/v1/chat/completions', init: chat('google/gemini-2.5-flash-lite:free'), status: 200 },
     { path: '/v1/chat/completions', init: chat('claude-fake-401'), status: 502 },
     { path: '/v1/chat/completions', init: chat('gemini-fake-invalid-key'), status: 502 },
-    { path: '/v1/chat/completions', init: chat('vendor/fake-429'), status: 429 },
-    { path: '/v1/chat/completions', init: chat('vendor/fake-200-error'), status: 502 },
+    { path: '/v1/chat/completions', init: chat('vendor/fake-429:free'), status: 429 },
+    { path: '/v1/chat/completions', init: chat('vendor/fake-200-error:free'), status: 502 },
     { path: '/v1/chat/completions', init: chat('claude-fake-echo-auth'), status: 400 },
     { path: '/v1/chat/completions', init: chat('gemini-fake-echo-auth', { stream: true }), status: 200 },
     { path: '/v1/chat/completions', init: chat('claude-fake-echo-auth', { stream: true }), status: 200 },
-    { path: '/v1/chat/completions', init: chat('vendor/fake-midstream-error-done', { stream: true }), status: 200 },
+    { path: '/v1/chat/completions', init: chat('vendor/fake-midstream-error-done:free', { stream: true }), status: 200 },
     { path: '/v1/chat/completions', init: chat('claude-fake-truncated', { stream: true }), status: 200 },
     { path: '/v1/chat/completions', init: chat('gemini-fake-slow-first-byte'), status: 504 },
     { path: '/v1/chat/completions', init: chat('claude-haiku-5-5', { response_format: { type: 'json_object' } }), status: 400 },
-    { path: '/v1/chat/completions', init: chat('gpt-5'), status: 400 },
+    { path: '/v1/chat/completions', init: chat('other-model'), status: 400 },
     { path: '/v1/chat/completions', init: { method: 'POST', body: `{"model":"claude-haiku-5-5","messages":"${PROMPT}` }, status: 400 },
     { path: '/control/keys/openrouter', init: { method: 'PUT', body: JSON.stringify({ key: KEPT_KEY }) }, status: 200 },
     { path: '/control/usage?days=7', status: 200 },
@@ -190,7 +192,7 @@ test('no secret or prompt reaches logs, events or the store across the whole API
   const byModel = (/** @type {string} */ m) => lines.find((l) => l.model === m);
   assert.deepEqual([byModel('claude-fake-truncated')?.error_code, byModel('claude-fake-truncated')?.provider], ['upstream_stream_incomplete', 'claude']);
   assert.equal(byModel('gemini-fake-slow-first-byte')?.error_code, 'upstream_timeout');
-  assert.ok(typeof byModel('google/gemini-2.5-flash-lite')?.upstream_ms === 'number');
+  assert.ok(typeof byModel('google/gemini-2.5-flash-lite:free')?.upstream_ms === 'number');
 });
 
 test('error text quoting the prompt or other client text reaches the client, never the store, events or logs', async () => {
@@ -212,11 +214,11 @@ test('error text quoting the prompt or other client text reaches the client, nev
     const claude = (/** @type {unknown[]} */ messages) => ({ method: 'POST', body: JSON.stringify({ model: 'claude-haiku-5-5', messages }) });
     const steps = [
       // the provider quotes the prompt: an HTTP error, an in-stream error, OpenRouter's 200 error body
-      ...['claude-fake-echo-prompt', 'gemini-fake-echo-prompt', 'vendor/fake-echo-prompt'].flatMap((model) => [
+      ...['claude-fake-echo-prompt', 'gemini-fake-echo-prompt', 'vendor/fake-echo-prompt:free'].flatMap((model) => [
         { path: '/v1/chat/completions', init: ask(model), status: 400 },
         { path: '/v1/chat/completions', init: ask(model, { stream: true }), status: 200 },
       ]),
-      { path: '/v1/chat/completions', init: ask('vendor/fake-echo-prompt-200'), status: 502 },
+      { path: '/v1/chat/completions', init: ask('vendor/fake-echo-prompt-200:free'), status: 502 },
       // gateway messages that quote client text: model name, message role, content part type, tool call id
       { path: '/v1/chat/completions', init: ask(MARKER), status: 400 },
       { path: '/v1/chat/completions', init: claude([{ role: MARKER, content: 'hi' }]), status: 400 },

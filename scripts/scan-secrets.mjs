@@ -58,6 +58,7 @@ const isTestHost = (host) => /\.test$/i.test(host);
  * @type {Rule[]}
  */
 export const RULES = [
+  { id: 'openai-key', re: /\bsk-(?:(?:proj|svcacct)-[A-Za-z0-9_-]{80,}|[A-Za-z0-9]{48})(?![A-Za-z0-9_-])/g },
   { id: 'anthropic-key', re: /sk-ant-(?:api|admin)\d\d-[A-Za-z0-9_-]{80,}/g },
   { id: 'anthropic-oauth-token', re: /sk-ant-(?:oat|ort)\d\d-[A-Za-z0-9_-]{40,}/g },
   { id: 'openrouter-key', re: /sk-or-v1-[0-9a-f]{64}/g },

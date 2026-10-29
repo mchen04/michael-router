@@ -5,7 +5,7 @@
 import { VERSION } from '../../src/version.js';
 import { GLOBAL_FLAGS, helpHint, parseArgv } from './args.js';
 import { COMMANDS } from './commands.js';
-import { configPaths, passwordShapeOk, readConfig, readCredentials } from './config.js';
+import { configPaths, passwordShapeOk, readConfig, readCredentials, readAdminCredentials } from './config.js';
 import { CliError, EXIT, usageError } from './errors.js';
 import { clean, createClient, normalizeUrl } from './http.js';
 import { colorEnabled, palette } from './output.js';
@@ -103,18 +103,24 @@ function createContext(parsed, io, secrets) {
      * was saved for.
      * @param {string} url
      */
-    async password(url) {
-      if (env.MROUTER_PASSWORD) {
-        const p = ctx.secret(env.MROUTER_PASSWORD);
-        if (!passwordShapeOk(p)) throw usageError('MROUTER_PASSWORD must be printable ASCII without leading or trailing spaces');
+    async password(url, admin = false) {
+      const variable = admin ? 'MROUTER_ADMIN_PASSWORD' : env.MROUTER_PASSWORD ? 'MROUTER_PASSWORD' : 'MROUTER_ADMIN_PASSWORD';
+      if (env[variable]) {
+        const p = ctx.secret(env[variable]);
+        if (!passwordShapeOk(p)) throw usageError(`${variable} must be printable ASCII without leading or trailing spaces`);
         return p;
       }
-      const stored = await readCredentials(paths, ctx.warn);
-      if (stored === null) throw usageError("no router password: run 'mrouter login' or set MROUTER_PASSWORD");
+      let credentialFile = admin ? paths.adminCredentials : paths.credentials;
+      let stored = admin ? await readAdminCredentials(paths, ctx.warn) : await readCredentials(paths, ctx.warn);
+      if (!admin && stored === null) {
+        credentialFile = paths.adminCredentials;
+        stored = await readAdminCredentials(paths, ctx.warn);
+      }
+      if (stored === null) throw usageError(admin ? "no admin password: run 'mrouter login' or set MROUTER_ADMIN_PASSWORD" : "no router password: run 'mrouter login' or set MROUTER_PASSWORD");
       ctx.secret(stored);
       if (!passwordShapeOk(stored)) {
         throw usageError(
-          `the stored password in ${paths.credentials} is malformed: it must be one line of printable ASCII without leading or trailing spaces`,
+          `the stored password in ${credentialFile} is malformed: it must be one line of printable ASCII without leading or trailing spaces`,
           "run 'mrouter login' again",
         );
       }
@@ -128,16 +134,16 @@ function createContext(parsed, io, secrets) {
       if (savedFor !== url) {
         throw usageError(
           `the stored password was saved for ${savedFor ?? 'another URL'} and is only sent there`,
-          `run 'mrouter login --url ${url}' or set MROUTER_PASSWORD`,
+          `run 'mrouter login --url ${url}' or set ${admin ? 'MROUTER_ADMIN_PASSWORD' : 'MROUTER_PASSWORD'}`,
         );
       }
       return stored;
     },
 
     /** An authenticated client. @param {number} defaultTimeoutS */
-    async client(defaultTimeoutS) {
+    async client(defaultTimeoutS, admin = false) {
       const { url } = await ctx.resolveUrl();
-      const password = await ctx.password(url);
+      const password = await ctx.password(url, admin);
       ctx.url = url;
       return createClient({ url, password, timeoutMs: ctx.timeoutMs(defaultTimeoutS) });
     },
@@ -229,7 +235,7 @@ function findCommand(words) {
  */
 export async function main(argv, io) {
   /** @type {Set<string>} */
-  const secrets = new Set();
+  const secrets = new Set([io.env.MROUTER_PASSWORD, io.env.MROUTER_ADMIN_PASSWORD].filter(Boolean));
   const scrub = scrubber(secrets);
   // Pre-scanned, so that --no-color also applies when the arguments do not parse.
   const end = argv.indexOf('--');
