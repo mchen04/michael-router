@@ -147,7 +147,7 @@ test('static files from public/ with the same security headers as vercel.json; A
       for (const [key, value] of Object.entries(expectedHeaders)) assert.equal(response.headers.get(key), value, `${resource}: ${key}`);
       const body = await response.text();
       if (resource === '/') {
-        assert.match(body, /<h1[^>]*>Four providers\. One API\.<\/h1>/);
+        assert.match(body, /<h1[^>]*>Four providers\.<br>One connection\.<\/h1>/);
         assert.match(body, /<title>Four providers, one private API \| Michael Router<\/title>/);
       } else if (resource.endsWith('.html')) assert.match(body, /<h1[^>]*>[^<]+<\/h1>/, resource);
       else assert.ok(body.length > 0, resource);

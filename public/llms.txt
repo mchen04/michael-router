@@ -1,13 +1,8 @@
 # Michael Router
 
-> A private, password-protected OpenAI Chat Completions endpoint for Claude, OpenAI, Gemini, and free OpenRouter models.
+> One password-protected OpenAI Chat Completions endpoint for Claude, OpenAI, Gemini, and free OpenRouter models.
 
-Base URL: https://michael-router.vercel.app/v1
-Client environment: OPENAI_BASE_URL=https://michael-router.vercel.app/v1
-Authentication: Bearer token from OPENAI_API_KEY. Never hard-code a password or provider key.
-
-## Documentation
-
-- [Agent guide](https://michael-router.vercel.app/AGENTS.md): Setup, model routing, streaming, and error recovery.
-- [API reference](https://michael-router.vercel.app/docs/api.html): Authentication, endpoints, routing, streaming, errors, and limits.
-- [Providers and models](https://michael-router.vercel.app/docs/providers.html): Model catalog and curl, Python, and JavaScript examples for all four providers.
+- [Agent guide](https://michael-router.vercel.app/AGENTS.md): Instructions for coding agents.
+- [Quick start](https://michael-router.vercel.app/): Connection setup and one request per provider.
+- [API guide](https://michael-router.vercel.app/docs/api.html): Authentication, routing, streaming, and errors.
+- [Tested models](https://michael-router.vercel.app/docs/providers.html): Model IDs tested 2026-10-29 and recommended defaults.

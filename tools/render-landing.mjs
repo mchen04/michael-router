@@ -24,9 +24,9 @@ const VIEWPORTS = [
   { name: 'desktop', width: 1440, height: 900, deviceScaleFactor: 2, mobile: false },
 ];
 const PAGES = [
-  { path: '/', name: 'landing', copies: 13, providers: 4 },
-  { path: '/docs/api.html', name: 'api', copies: 2, providers: 0 },
-  { path: '/docs/providers.html', name: 'providers', copies: 12, providers: 4 },
+  { path: '/', name: 'landing', copies: 6, providers: 4 },
+  { path: '/docs/api.html', name: 'api', copies: 0, providers: 0 },
+  { path: '/docs/providers.html', name: 'providers', copies: 0, providers: 4 },
 ];
 const SCHEMES = /** @type {const} */ (['light', 'dark']);
 
@@ -71,7 +71,7 @@ function measure() {
     return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
   };
   for (const el of document.body.querySelectorAll('*')) {
-    if (!el.getClientRects().length || el.classList.contains('skip')) continue;
+    if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: true }) || el.classList.contains('skip')) continue;
     if (![...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim())) continue;
     const style = getComputedStyle(el);
     let background = el;
@@ -99,7 +99,7 @@ function measure() {
   const smallTargets = [];
   let smallestTarget = null;
   for (const el of document.querySelectorAll('a[href], button, input, select, textarea, summary')) {
-    if (!el.getClientRects().length || el.classList.contains('skip')) continue;
+    if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: true }) || el.classList.contains('skip')) continue;
     el.scrollIntoView({ block: 'center' });
     const r = el.getBoundingClientRect();
     const [cx, cy] = [r.left + r.width / 2, r.top + r.height / 2];
@@ -219,12 +219,14 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
     const initialMetrics = await page.evaluate(measure);
     const interactionProblems = [];
     if (initialMetrics.horizontalOverflow) interactionProblems.push('Initial page overflows horizontally');
+    interactionProblems.push(...initialMetrics.smallTapTargets.map((target) => `Initial tap target: ${target}`));
+    interactionProblems.push(...initialMetrics.contrastProblems.map((target) => `Initial contrast: ${target}`));
     const pageProblems = await page.evaluate((target) => {
       const problems = [];
       if (document.querySelectorAll('h1').length !== 1) problems.push('Expected one main heading');
       if (document.querySelectorAll('[data-copy]').length !== target.copies) problems.push(`Expected ${target.copies} copy examples`);
       if (document.querySelectorAll('.provider').length !== target.providers) problems.push(`Expected ${target.providers} providers`);
-      if (!document.body.textContent.includes('https://michael-router.vercel.app/v1')) problems.push('Missing base URL');
+      if (target.name === 'api' && !document.body.textContent.includes('https://michael-router.vercel.app/v1')) problems.push('Missing base URL');
       if (!document.title || !document.querySelector('meta[name="description"]')?.content) problems.push('Missing page metadata');
       if (document.querySelector('style, [style], [onclick], script:not([src])')) problems.push('Inline code violates CSP');
       for (const nav of document.querySelectorAll('header .site-nav, footer .site-nav:first-child')) {
@@ -246,7 +248,7 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
         await page.locator('.primary').click();
         if (new URL(page.url()).hash !== '#quickstart') interactionProblems.push('Primary action misses setup');
       }
-      for (const summary of await page.locator('summary').all()) await summary.click();
+      while (await page.locator('details:not([open]) > summary').count()) await page.locator('details:not([open]) > summary').first().click();
       for (const button of await page.locator('[data-copy]').all()) {
         const id = await button.getAttribute('data-copy');
         const expected = await page.locator(`[id="${id}"]`).textContent();
@@ -256,12 +258,14 @@ async function render(browser, origin, outDir, vp, scheme, { javaScript = true, 
         if (await page.locator('.copy-status').textContent() !== 'Example copied.') interactionProblems.push(`Missing feedback: ${id}`);
         copiesChecked++;
       }
+      if (target.copies > 0) {
       await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Denied'); } } }));
       await page.locator('[data-copy]').first().click();
       if (await page.locator('.copy-status').textContent() !== 'Example copied.') interactionProblems.push('Clipboard fallback failed');
       await page.evaluate(() => { document.execCommand = () => false; });
       await page.locator('[data-copy]').first().click();
       if (!(await page.locator('.copy-status').textContent()).startsWith('Copy unavailable.')) interactionProblems.push('Clipboard failure has no guidance');
+      }
       await page.locator('.skip').focus();
       let reachedLastLink = false;
       for (let step = 0; step < 150; step++) {
@@ -341,8 +345,8 @@ async function main() {
     for (const link of links) if (!(await fetch(`${dev.url}${link}`)).ok) linkProblems.push(`Broken internal link: ${link}`);
     const favicon = await fetch(`${dev.url}/favicon.svg`);
     const problems = [
-      ...renders.filter((r) => r.horizontalOverflow).map((r) => `horizontal overflow: ${r.viewport} ${r.scheme}`),
-      ...renders.flatMap((r) => r.smallTapTargets.map((t) => `tap target under 44 px (${r.viewport} ${r.scheme}): ${t}`)),
+      ...[...renders, ...noJs].filter((r) => r.horizontalOverflow).map((r) => `horizontal overflow: ${r.viewport} ${r.scheme}`),
+      ...[...renders, ...noJs].flatMap((r) => r.smallTapTargets.map((t) => `tap target under 44 px (${r.viewport} ${r.scheme}): ${t}`)),
       ...[...renders, ...noJs].flatMap((r) => [
         ...(r.status === 200 ? [] : [`page status ${r.status}: ${r.viewport} ${r.scheme}`]),
         ...r.consoleErrors.map((e) => `console error (${r.viewport} ${r.scheme}): ${e}`),
