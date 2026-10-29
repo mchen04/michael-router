@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f7fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141c2b" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Authentication, routing, streaming, errors, and endpoints for Michael Router.">
+<title>API reference | Michael Router</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body id="top" class="documentation">
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap masthead"><a class="brand" href="/">Michael Router</a><nav class="site-nav" aria-label="Documentation"><a href="/docs/api.html">API</a><a href="/docs/cli.html">CLI</a><a href="/docs/providers.html">Providers and models</a></nav></header>
+<main id="main"><article class="wrap doc-content"><header class="doc-intro"><h1>API reference</h1><p>Send OpenAI Chat Completions requests from your server, script, or compatible client.</p></header>
+<nav class="section-nav" aria-label="API sections"><a href="#connection">Connection</a><a href="#routing">Routing</a><a href="#streaming">Streaming</a><a href="#errors">Errors</a></nav>
+<section id="connection"><h2>Connection and authentication</h2><dl class="facts"><div><dt>Base URL</dt><dd><code class="url">https://michael-router.vercel.app/v1</code></dd></div><div><dt>Authentication</dt><dd><code>Authorization: Bearer &lt;router password&gt;</code></dd></div></dl><p>Read the password from <code>MROUTER_PASSWORD</code>. OpenAI SDKs send the Bearer header when you set their API key.</p><p>Every API route requires the password. Provider keys stay on the server. <code>x-api-key</code> and Basic authentication do not work.</p><p>The API does not send CORS headers. Use a server-side client, not browser JavaScript.</p>
+<figure class="code"><figcaption><span>First request</span><button type="button" data-copy="api-request" aria-label="Copy First request">Copy</button></figcaption><pre tabindex="0"><code id="api-request">printf &#x27;Authorization: Bearer %s\n&#x27; &quot;$MROUTER_PASSWORD&quot; |
+curl https://michael-router.vercel.app/v1/chat/completions \
+  -H @- -H &#x27;Content-Type: application/json&#x27; \
+  -d &#x27;{&quot;model&quot;:&quot;claude-haiku-5-5&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Hello&quot;}]}&#x27; </code></pre></figure>
+</section><section><h2>Endpoints</h2><dl class="reference-list"><div><dt><code>POST /v1/chat/completions</code></dt><dd>Send <code>model</code> and <code>messages</code>. Add <code>stream: true</code> to stream the reply.</dd></div><div><dt><code>GET /v1/models</code></dt><dd>List known models for configured providers. Context length and maximum output appear when known. This list is not exhaustive.</dd></div><div><dt><code>GET /control/health</code></dt><dd>Check the server, store, and configured providers.</dd></div><div><dt><code>/control/keys</code></dt><dd>List keys with GET. Set or remove a provider override with PUT or DELETE at <code>/control/keys/:provider</code>.</dd></div><div><dt><code>GET /control/usage</code></dt><dd>Get usage with <code>?days=N</code> or <code>?since=YYYY-MM-DD</code>, up to 400 days.</dd></div><div><dt><code>GET /control/errors</code></dt><dd>Get recent events with <code>?limit=N</code> and optional <code>kind=auth|upstream|gateway</code>.</dd></div></dl></section>
+<section id="routing"><h2>Model routing</h2><p>The first matching rule wins. IDs contain 1–128 letters, digits, or <code>._:/@+-</code>, and start with a letter or digit.</p><ol><li>IDs containing <code>/</code> go to OpenRouter. Only <code>:free</code> IDs and <code>openrouter/free</code> are allowed. Paid IDs are refused.</li><li><code>claude-*</code> goes to Claude.</li><li><code>gpt-*</code> and reasoning IDs such as <code>o3</code> or <code>o4-mini</code> go to OpenAI.</li><li><code>gemini-*</code> goes to Gemini.</li></ol><p>Other IDs fail with <code>model_not_routable</code>. See <a href="/docs/providers.html">Providers and models</a> for the full catalog and examples.</p></section>
+<section id="streaming"><h2>Streaming</h2><p>Set <code>stream: true</code>. The response uses <code>text/event-stream</code> and OpenAI chat completion chunks.</p><p>Read text from <code>choices[0].delta.content</code>. Skip empty <code>choices</code> arrays, which can contain usage.</p><p>Add <code>stream_options: {"include_usage": true}</code> to request usage. A complete stream ends with <code>data: [DONE]</code>.</p><p>A stream can fail after HTTP 200. An error event or a missing <code>[DONE]</code> means the response is incomplete.</p><figure class="code"><figcaption><span>Python streaming</span><button type="button" data-copy="stream-python" aria-label="Copy Python streaming">Copy</button></figcaption><pre tabindex="0"><code id="stream-python">import os
+from openai import OpenAI
+
+client = OpenAI(base_url=&quot;https://michael-router.vercel.app/v1&quot;,
+                api_key=os.environ[&quot;MROUTER_PASSWORD&quot;])
+stream = client.chat.completions.create(
+    model=&quot;gemini-3.5-flash-lite&quot;,
+    messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],
+    stream=True,
+    stream_options={&quot;include_usage&quot;: True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end=&quot;&quot;)</code></pre></figure></section>
+<section><h2>Claude translation</h2><p>Send OpenAI messages and function tools. The router translates them to Anthropic’s Messages API and returns OpenAI-format responses.</p><p>Use <code>response_format: json_schema</code> for structured output. <code>json_object</code> has no equivalent and is refused.</p><p>Pass Claude-specific fields through <code>extra_body={"anthropic": {...}}</code> in Python, or <code>anthropic</code> in the JavaScript request.</p><p>Automatic prompt caching is enabled. Send <code>x-router-cache: off</code> to disable it for one request.</p><p>Leave <code>anthropic.thinking</code> off in tool loops. Chat Completions cannot return signed thinking blocks to Claude on later turns.</p></section>
+<section id="errors"><h2>Errors and recovery</h2><p>Read <code>error.code</code> and <code>error.message</code>. The error type is <code>gateway_error</code> or <code>upstream_error</code>.</p><p>Upstream errors include the provider and, when available, <code>upstream_status</code>. Keep <code>x-router-request-id</code> when asking for help.</p><dl class="reference-list">
+<div><dt>400 · Invalid request</dt><dd>Fix JSON, model ID, message shape, or unsupported fields before retrying. Codes include <code>invalid_json</code>, <code>model_required</code>, <code>invalid_model</code>, <code>model_not_routable</code>, <code>invalid_parameter</code>, <code>unsupported_parameter</code>, <code>unsupported_content</code>, and <code>invalid_tool_arguments</code>.</dd></div>
+<div><dt>401 · Router password</dt><dd>Stop. Correct the missing or invalid password. Repeated failures cause a delay and then block the source.</dd></div>
+<div><dt>402 / 403 · Provider billing or access</dt><dd>Ask the router owner to fix billing or access. Do not retry unchanged.</dd></div>
+<div><dt>404 / 405 · Path or method</dt><dd>Fix the endpoint or method. Authentication happens before these errors.</dd></div>
+<div><dt>413 · <code>payload_too_large</code></dt><dd>Reduce the body below 4 MiB for chat or 16 KiB for control requests.</dd></div>
+<div><dt>429 · Wait before retrying</dt><dd>Wait for <code>Retry-After</code>. Codes include <code>auth_backoff</code>, <code>source_blocked</code>, <code>auth_busy</code>, and <code>provider_rate_limited</code>.</dd></div>
+<div><dt>500 · <code>internal_error</code></dt><dd>Retry with backoff. Report repeated failures to the router owner.</dd></div>
+<div><dt>502 · Provider failure</dt><dd>For <code>provider_auth_failed</code>, ask the owner to fix the provider key. Do not change the router password. Retry <code>provider_error</code> or <code>upstream_unreachable</code> with backoff.</dd></div>
+<div><dt>503 · Configuration or store</dt><dd>For <code>provider_not_configured</code>, ask the owner to configure that provider. For <code>server_misconfigured</code>, ask the owner to fix deployment settings. Retry <code>store_unavailable</code> with backoff.</dd></div>
+<div><dt>504 · <code>upstream_timeout</code></dt><dd>The 295-second limit expired. The provider may already have billed the work. Check before retrying.</dd></div></dl></section>
+<section><h2>Usage and limits</h2><p>Usage is recorded per UTC day, provider, and model. Cost can be exact, estimated, unknown, mixed, or partial.</p><p>A partial cost is a lower bound. Missing prices or usage do not count as zero cost.</p><p>The request body limit is 4 MiB. The provider timeout is 295 seconds, including streams. Disconnecting cancels the upstream request.</p></section></article></main>
+<footer class="wrap"><nav class="site-nav" aria-label="Footer documentation"><a href="/docs/api.html">API</a><a href="/docs/cli.html">CLI</a><a href="/docs/providers.html">Providers and models</a></nav><nav class="site-nav" aria-label="Agent resources"><a href="/AGENTS.md">Agent guide</a><a href="/llms.txt">llms.txt</a></nav><p>Private API. Password required for every request.</p></footer>
+<p class="copy-status" role="status" aria-live="polite"></p>
+</body>
+</html>
