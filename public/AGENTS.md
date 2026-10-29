@@ -13,13 +13,17 @@ Do not call the Responses API or native Anthropic Messages API.
 
 Use these recommended defaults:
 
-- Claude: `claude-haiku-5-5`. Names start with `claude-`.
-- OpenAI: `gpt-6-luna`. Names start with `gpt-`, or use `o3`.
+- Claude: `claude-opus-5-5`. Names start with `claude-`.
+- OpenAI: `gpt-6.1-sol`. Names start with `gpt-`, or use `o3`.
 - Gemini: `gemini-3.5-flash-lite`. Names start with `gemini-`.
 - OpenRouter free: `openrouter/free`. IDs contain `/` and must end in `:free`, except this default.
 
 Read [tested models](https://michael-router.vercel.app/docs/providers.html) before choosing another ID.
 Never use a paid OpenRouter ID.
+
+Effort defaults to medium for Claude, OpenAI, and Gemini.
+Set `"reasoning_effort": "low" | "medium" | "high"` to change it; higher costs more.
+OpenRouter keeps its own default.
 
 ## Handle replies
 

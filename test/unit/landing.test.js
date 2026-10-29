@@ -22,7 +22,7 @@ const testedModels = {
   gemini: ['gemini-3.6-flash', 'gemini-3.5-flash-lite'],
   openrouter: ['openrouter/free', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'nvidia/nemotron-3.5-super-vl:free', 'nvidia/nemotron-3.5-lightning:free', 'poolside/laguna-s-2.1:free', 'cohere/north-mini-code:free'],
 };
-const recommendedModels = { claude: 'claude-haiku-5-5', openai: 'gpt-6-luna', gemini: 'gemini-3.5-flash-lite', openrouter: 'openrouter/free' };
+const recommendedModels = { claude: 'claude-opus-5-5', openai: 'gpt-6.1-sol', gemini: 'gemini-3.5-flash-lite', openrouter: 'openrouter/free' };
 
 function assertLocalReference(reference, file) {
   const origin = 'https://public.test';
@@ -149,5 +149,18 @@ test('curl examples keep passwords out of process arguments', () => {
       assert.ok(curls.length, `${file}: curl example`);
       for (const command of curls) assert.match(command, /\s-H @-\s/, `${file}: header must come from stdin`);
     }
+  }
+});
+
+test('public guides explain the medium effort default and how to change it', () => {
+  for (const file of ['index.html', 'docs/providers.html', 'docs/api.html', 'AGENTS.md', 'llms.txt']) {
+    const source = text(readFileSync(new URL(file, PUBLIC), 'utf8'));
+    assert.match(source, /Effort defaults to medium/, file);
+    assert.match(source, /"reasoning_effort": "low" \| "medium" \| "high"/, file);
+    assert.match(source, /higher costs more/, file);
+  }
+  for (const file of ['AGENTS.md', 'llms.txt']) {
+    const source = readFileSync(new URL(file, PUBLIC), 'utf8');
+    for (const model of Object.values(recommendedModels)) assert.ok(source.includes(model), file);
   }
 });

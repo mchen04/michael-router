@@ -88,6 +88,26 @@ lists the models the gateway has metadata and prices for.
 
 `POST /v1/chat/completions` with a JSON object body of at most 4 MiB.
 
+Claude, OpenAI and Gemini default to `reasoning_effort: "medium"` when it is omitted.
+Set `"reasoning_effort": "low" | "medium" | "high"` to change it; higher costs more.
+OpenRouter receives no added effort field.
+
+Explicit `reasoning_effort` values remain client-controlled, subject to provider support.
+Claude translates `none` and `minimal` to `low`, as before.
+Native effort settings suppress the default:
+
+- Claude: top-level `output_config`, or `anthropic.output_config`.
+- OpenAI: `reasoning.effort`.
+- Gemini: `extra_body.google.thinking_config.thinking_level` or `thinking_budget`.
+
+Claude forwards top-level `output_config` and retains the `anthropic` override precedence.
+For OpenAI, a price-table entry with `reasoning_effort: false` suppresses only the default.
+All other OpenAI models receive medium when neither effort field is present.
+No current OpenAI price-table entry is marked as unsupported.
+
+Native field handling follows the [OpenAI guide](https://developers.openai.com/api/docs/guides/latest-model#gpt-6-astra-update-api-and-model-parameters)
+and [Gemini compatibility guide](https://ai.google.dev/gemini-api/docs/openai), checked 2026-10-29.
+
 What every provider route shares:
 
 - The upstream request carries only `content-type: application/json`, the provider's auth header
@@ -101,7 +121,7 @@ What every provider route shares:
 
 OpenAI forwards to `POST https://api.openai.com/v1/chat/completions` by default.
 Set `OPENAI_BASE_URL` to override the server origin.
-OpenAI and Gemini preserve request bytes except when streaming usage is requested internally.
+OpenAI and Gemini preserve request bytes except when adding the default effort, renaming OpenAI token limits, or requesting streaming usage.
 For streams, the router sets `stream_options.include_usage = true` and removes unrequested usage-only chunks.
 
 OpenRouter accepts only `:free` names and `openrouter/free`.

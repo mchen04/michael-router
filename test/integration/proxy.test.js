@@ -157,7 +157,7 @@ test('pass-through non-streaming: request bytes forwarded unchanged; upstream bo
     ['google/gemini-2.5-flash-lite:free', 'openrouter', '/api/v1/chat/completions'],
     ['gemini-2.5-flash-lite', 'gemini', '/v1beta/openai/chat/completions'],
   ]) {
-    const raw = `{ "model" : "${model}",\n  "messages": ${JSON.stringify(MESSAGES)}, "seed": 7, "vendor_extra": {"a": [1, 2]} }`;
+    const raw = `{ "model" : "${model}",\n  "messages": ${JSON.stringify(MESSAGES)}, "seed": 7, "reasoning_effort": "high", "vendor_extra": {"a": [1, 2]} }`;
     const r = await h.call('/v1/chat/completions', { method: 'POST', headers: bearer(), body: raw });
     assert.equal(r.status, 200);
     if (provider === 'gemini') assert.equal(fake.requests.at(-1)?.raw, raw, `${provider}: request bytes unchanged`);

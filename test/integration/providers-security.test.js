@@ -253,3 +253,14 @@ test('configuration details require a verified password and never bypass the sha
   assert.equal(details.status, 503);
   assert.ok(details.text.includes('OPENAI_API_KEY_2'));
 });
+
+test('routed upstream requests receive medium effort only for direct providers', async () => {
+  const h = await harness();
+  for (const [provider, , model] of providers) {
+    assert.equal((await chat(h, model)).status, 200);
+    const body = requests.at(-1).body;
+    if (provider === 'claude') assert.equal(body.output_config.effort, 'medium');
+    else if (provider === 'openrouter') assert.equal(Object.hasOwn(body, 'reasoning_effort'), false);
+    else assert.equal(body.reasoning_effort, 'medium');
+  }
+});

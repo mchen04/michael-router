@@ -187,10 +187,11 @@ test('response_format json_schema -> output_config.format; json_object is 400; r
   const schema = { type: 'object', properties: { a: { type: 'string' } } };
   assert.deepEqual(build({ response_format: { type: 'json_schema', json_schema: { name: 'x', schema, strict: true } } }).body.output_config, {
     format: { type: 'json_schema', schema },
+    effort: 'medium',
   });
   rejects({ response_format: { type: 'json_object' } }, 'unsupported_parameter');
   assert.throws(() => build({ response_format: { type: 'json_object' } }), /use json_schema/);
-  assert.ok(!('output_config' in build({ response_format: { type: 'text' } }).body));
+  assert.deepEqual(build({ response_format: { type: 'text' } }).body.output_config, { effort: 'medium' });
   const effort = (/** @type {string} */ e) => build({ reasoning_effort: e }).body.output_config.effort;
   assert.deepEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort), ['low', 'low', 'low', 'medium', 'high', 'xhigh', 'max']);
   rejects({ reasoning_effort: 'extreme' }, 'invalid_parameter');
@@ -224,7 +225,7 @@ test('n > 1, audio and audio modalities are 400 unsupported_parameter; ignored f
   rejects({ modalities: ['text', 'audio'] }, 'unsupported_parameter');
   const ignored = { n: 1, logprobs: true, top_logprobs: 2, seed: 7, frequency_penalty: 1, presence_penalty: 1, logit_bias: { 1: 2 }, user: 'u', metadata: { a: 'b' }, store: true, service_tier: 'auto' };
   const { body } = build(ignored);
-  assert.deepEqual(Object.keys(body).sort(), ['cache_control', 'max_tokens', 'messages', 'model']);
+  assert.deepEqual(Object.keys(body).sort(), ['cache_control', 'max_tokens', 'messages', 'model', 'output_config']);
 });
 
 test('prompt caching: top-level cache_control unless x-router-cache: off or anthropic.cache_control; anthropic merged last', () => {
