@@ -2,6 +2,7 @@
 import { Buffer } from 'node:buffer';
 import { hashPassword } from '../../src/auth.js';
 
+export const ADMIN_PASSWORD = 'admin-SENTINEL-private-owner-93ab';
 export const PASSWORD = 'pw-SENTINEL-correct-horse-battery-7f3a';
 export const WRONG_PASSWORD = 'pw-SENTINEL-wrong-guess-0b1c';
 export const ROUTER_SECRET = Buffer.from('router-secret-SENTINEL-0123456789abcdefghijkl').toString('base64url');
@@ -31,11 +32,11 @@ export function passwordHash(password = PASSWORD, params = FAST_SCRYPT) {
 }
 
 /** @param {string} [password] */
-export const bearer = (password = PASSWORD) => ({ authorization: `Bearer ${password}` });
+export const bearer = (password = ADMIN_PASSWORD) => ({ authorization: `Bearer ${password}` });
 
 /** Base router env using the memory store. @param {Record<string, string>} [extra] */
 export async function baseEnv(extra = {}) {
-  return { ROUTER_PASSWORD_HASH: await passwordHash(), ROUTER_SECRET, ROUTER_STORE: 'memory', ...extra };
+  return { ROUTER_ADMIN_PASSWORD_HASH: await passwordHash(ADMIN_PASSWORD), ROUTER_PASSWORD_HASH: await passwordHash(), ROUTER_SECRET, ROUTER_STORE: 'memory', ...extra };
 }
 
 /** A controllable clock. @param {number} [start] */

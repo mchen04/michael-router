@@ -10,8 +10,8 @@ implementation does and does not protect against.
 
 Assets, in order of value:
 
-1. **Provider API keys** (Anthropic, Gemini, OpenRouter). They spend the deployment owner's money.
-2. **The router password.** Anyone holding it can spend through the keys and read usage.
+1. **Provider API keys** (Anthropic, Gemini, OpenRouter, OpenAI). They spend the deployment owner's money.
+2. **The user password.** Friends can send chat requests through the configured keys. Only the separate admin password grants control access.
 3. **Usage and event data** (models used, token counts, costs, client IPs of failed logins).
 
 Adversaries considered:
@@ -562,3 +562,42 @@ Chat bodies are bounded at 4 MiB; key bodies are bounded at 16 KiB.
 The reader checks both declared sizes and streamed byte counts.
 Logs allow known fields only, errors redact secrets, and stored provider keys use authenticated encryption.
 `test/unit/auth.test.js`, `test/unit/handler.test.js`, `test/integration/proxy.test.js` and `test/integration/logging.test.js` cover these controls.
+
+## 12. Shared-user and owner boundary
+
+Friends receive only the user password. They can call `/v1/*`.
+Every `/control/*` path requires the separate admin password, including health details and unknown control paths.
+This also applies to `/api/router?__route=control/...`.
+The owner credential also works on `/v1/*`.
+
+| Credential | `/v1/*` | `/control/*` |
+| --- | --- | --- |
+| Missing | 401 | 401 |
+| Unknown | 401, then limited | 401, then limited |
+| Shared user password | Allowed | 403 `admin_required` |
+| Admin password | Allowed | Allowed |
+
+A shared-password control refusal releases its authentication slot without adding a password failure.
+Both roles share the source limiter and blocking state.
+Each attempt can compare two password hashes; the limiter still bounds request attempts.
+Both verifiers use timing-safe comparisons and separate caches.
+A credential matching the shared password cannot become admin, even if both configured passwords are equal.
+Choose different passwords to keep owner access usable.
+
+`ROUTER_ADMIN_PASSWORD_HASH` and `ROUTER_ADMIN_PASSWORD` are mutually exclusive.
+Their validation matches the user variables, including one optional trailing newline.
+Missing or invalid admin settings fail closed on control routes without disabling user chat.
+The response names only admin variables, never values.
+Both admin values enter the same log and response redactor as user credentials.
+
+The CLI remains owner-only.
+`mrouter login` verifies admin access before saving `admin-credentials` with mode 0600.
+Control commands use that file or `MROUTER_ADMIN_PASSWORD`, never a legacy user credential.
+Chat may use the shared password or owner password.
+The smoke script uses separate credential sources and verifies the user receives 403 on `/control/keys`.
+`test/integration/admin.test.js` checks every control route and rewrite, both roles, missing configuration and the shared limiter.
+`test/cli/admin.test.js` proves command credential selection and refusal to use the shared password for control.
+
+Login removes previous credentials before changing the saved URL.
+A failed configuration write cannot pair an old owner credential with a new host.
+The CLI test checks this failure path.

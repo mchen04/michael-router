@@ -15,6 +15,7 @@ export const EVENT_MESSAGES = Object.freeze({
   model_required: 'The request names no model.',
   invalid_model: 'The model name breaks the naming rule.',
   model_not_allowed: 'OpenRouter accepts only free models without paid extras.',
+  admin_required: 'An admin password is required for control routes.',
   cross_origin_forbidden: 'Cross-origin requests are not allowed.',
   model_not_routable: 'No routing rule matches the model name.',
   payload_too_large: 'The request body is over the size limit.',

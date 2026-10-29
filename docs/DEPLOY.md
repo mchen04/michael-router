@@ -334,8 +334,8 @@ database is reachable, the login works or the schema is migrated. A wrong passwo
 `invalid_credentials`) does reach the store (a store failure answers 503 first), but it counts a
 failure for your source address, so do not use it as a check.
 
-`mrouter login` checks the password against the router and saves it, with the URL, in the
-`0600` credentials file of your user's config directory (`CLI.md`). Do that only on a machine
+`mrouter login` checks the admin password against the router and saves it, with the URL, in the
+`0600` admin-credentials file of your user's config directory (`CLI.md`). Do that only on a machine
 that is one of your clients. On any other machine, run `mrouter logout` when you are done, or
 skip `login` and give the password to each command through `MROUTER_PASSWORD` for that session.
 
@@ -472,3 +472,48 @@ Review `SECURITY.md` for the route authentication and browser-origin checks.
 Missing credentials always return 401, including during misconfiguration.
 Configuration variable names appear only after successful authentication with a working limiter store.
 A missing password, secret or store makes authenticated diagnostics unavailable; inspect those settings in the deployment.
+
+## Separate owner credential
+
+Keep the shared user password for friends' `/v1/*` requests.
+Create a different admin password and set exactly one server variable:
+`ROUTER_ADMIN_PASSWORD_HASH` is preferred; `ROUTER_ADMIN_PASSWORD` accepts plaintext with the same length rule.
+Both use the existing password helper and newline rules.
+Missing admin settings leave chat working but make control routes return 503.
+
+Transfer the admin password with its own manifest because each run reads stdin once.
+The manifest contains source names and project identifiers only:
+
+```json
+{
+  "version": 1,
+  "environment": "production",
+  "project": { "orgId": "<your org id>", "projectId": "<your project id>" },
+  "entries": [
+    {
+      "env": "ROUTER_ADMIN_PASSWORD_HASH",
+      "source": { "type": "stdin" },
+      "transform": "scrypt-hash"
+    }
+  ]
+}
+```
+
+Use the existing plan, check and apply sequence with this separate manifest:
+
+```sh
+node scripts/copy-keys-to-vercel.mjs --manifest scripts/admin-key-sources.json
+<admin password source> | node scripts/copy-keys-to-vercel.mjs --manifest scripts/admin-key-sources.json --check
+<admin password source> | node scripts/copy-keys-to-vercel.mjs --manifest scripts/admin-key-sources.json --yes
+```
+
+Do not combine the raw user and admin passwords in one stdin manifest.
+The script refuses conflicting admin plaintext and hash variables before transferring values.
+Redeploy after changing server environment variables.
+
+For owner commands, use `mrouter login` or set `MROUTER_ADMIN_PASSWORD` through the designated secret source.
+The CLI remains owner-only; give friends the API URL and user password instead.
+For smoke tests, supply the admin password separately as `MR_ADMIN_PASSWORD`.
+The user password still comes from `MROUTER_PASSWORD` or stdin.
+The script checks admin access returns 200 and the user password returns 403 on `/control/keys`.
+Both passwords are excluded from output and saved evidence.

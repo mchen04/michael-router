@@ -7,7 +7,7 @@ import { after, before, test } from 'node:test';
 import { parsePasswordHash, verifyPassword } from '../../src/auth.js';
 import { MIN_PASSWORD_LENGTH } from '../../src/config.js';
 import { PTY_SKIP, configDir, finishCliSuite, makeHome, plain, runCli, runCliPty } from '../helpers/cli.js';
-import { PASSWORD, baseEnv } from '../helpers/fixtures.js';
+import { ADMIN_PASSWORD as PASSWORD, baseEnv } from '../helpers/fixtures.js';
 import { startDevServer } from '../helpers/processes.js';
 
 /** @type {Awaited<ReturnType<typeof startDevServer>>} */
@@ -54,13 +54,13 @@ test('login on a terminal: the hidden prompt never echoes, handles backspace, an
   const home = await makeHome();
   const r = await runCliPty(['login', '--url', router.url], {
     home,
-    steps: [{ waitFor: /Router password: $/, send: `${PASSWORD}#\u007f\r` }],
+    steps: [{ waitFor: /Admin password: $/, send: `${PASSWORD}#\u007f\r` }],
   });
   assert.equal(r.code, 0, r.output);
   const out = plain(r.output);
-  assert.match(out, /^Router password: \nLogged in to http:\/\/127\.0\.0\.1:\d+\.\n/);
+  assert.match(out, /^Admin password: \nLogged in to http:\/\/127\.0\.0\.1:\d+\.\n/);
   assert.ok(!out.includes('#'), 'typed characters are not echoed');
-  assert.equal(await readFile(path.join(configDir(home), 'credentials'), 'utf8'), PASSWORD);
+  assert.equal(await readFile(path.join(configDir(home), 'admin-credentials'), 'utf8'), PASSWORD);
 });
 
 test('hash-password on a terminal asks twice; Ctrl-C at the prompt exits 130', { skip: PTY_SKIP }, async () => {
@@ -76,9 +76,9 @@ test('hash-password on a terminal asks twice; Ctrl-C at the prompt exits 130', {
   const hash = /** @type {RegExpExecArray} */ (/^(scrypt\$\S+)\n/m.exec(plain(r.output)))[1];
   await assertHashOf(hash, NEW_PASSWORD);
 
-  const cancelled = await runCliPty(['login', '--url', router.url], { home, steps: [{ waitFor: /Router password: $/, send: 'pw-SENTINEL-abc\u0003' }] });
+  const cancelled = await runCliPty(['login', '--url', router.url], { home, steps: [{ waitFor: /Admin password: $/, send: 'pw-SENTINEL-abc\u0003' }] });
   assert.equal(cancelled.code, 130);
-  assert.match(plain(cancelled.output), /^Router password: \nmrouter: cancelled\n/);
+  assert.match(plain(cancelled.output), /^Admin password: \nmrouter: cancelled\n/);
 });
 
 test('colors only on a terminal, and never with --no-color or NO_COLOR, argument errors included', { skip: PTY_SKIP }, async () => {

@@ -140,6 +140,9 @@ export function createHandler(options = {}) {
   const authenticator = (config.passwordHash || config.password) && !config.passwordConflict
     ? createAuthenticator({ passwordHash: config.passwordHash, password: config.password, verifyPassword: options.verifyPassword })
     : null;
+  const adminAuthenticator = config.adminPasswordHash || config.adminPassword
+    ? createAuthenticator({ passwordHash: config.adminPasswordHash, password: config.adminPassword, verifyPassword: options.verifyPassword })
+    : null;
   const keyResolver = createKeyResolver(config);
   const verifyProviderKey = options.verifyProviderKey ?? defaultVerifyProviderKey;
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
@@ -241,7 +244,11 @@ export function createHandler(options = {}) {
       return ctx.fail(401, 'missing_credentials', 'Missing credentials: send "Authorization: Bearer <password>".');
     }
     ctx.redactor = ctx.redactor.with([presented]);
-    if (!authenticator || !store) return ctx.fail(503, 'server_misconfigured', 'Server authentication is unavailable.');
+    const adminRequired = /^\/control(?:\/|$)/.test(path ?? '');
+    if (adminRequired && !adminAuthenticator) {
+      return ctx.fail(503, 'server_misconfigured', `Admin access requires valid ${config.adminProblems.join(', ')}. Set exactly one admin password variable.`);
+    }
+    if ((!authenticator && !adminAuthenticator) || !store) return ctx.fail(503, 'server_misconfigured', 'Server authentication is unavailable.');
     ctx.source = resolveSource(ctx.request, config, platform.remoteAddress);
     const limiter = createLimiter({ store: ctx.store, limits: config.limiter, now });
 
@@ -254,8 +261,11 @@ export function createHandler(options = {}) {
     // 2. Verify.
     const t = performance.now();
     let ok;
+    let isAdmin = false;
     try {
-      ok = await /** @type {NonNullable<typeof authenticator>} */ (authenticator).check(presented);
+      const isUser = authenticator ? await authenticator.check(presented) : false;
+      isAdmin = !isUser && adminAuthenticator ? await adminAuthenticator.check(presented) : false;
+      ok = isUser || isAdmin;
     } catch (err) {
       ctx.waitUntil(limiter.release(ctx.source.id));
       throw err;
@@ -282,6 +292,7 @@ export function createHandler(options = {}) {
     // 3. Correct.
     ctx.waitUntil(limiter.release(ctx.source.id));
     ctx.authenticated = true;
+    if (adminRequired && !isAdmin) return ctx.fail(403, 'admin_required', 'An admin password is required for control routes.');
     if (!configured) return ctx.fail(503, 'server_misconfigured', misconfigured);
     ctx.keys = keyResolver.resolve(pre.keys, (provider) =>
       ctx.events.record({

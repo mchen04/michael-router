@@ -7,9 +7,10 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 
 - **Base URL**: `https://<host>/v1`, where `<host>` is your deployment's domain. Any client that
   speaks OpenAI Chat Completions can use it by setting the base URL and API key.
-- **Authentication**: `Authorization: Bearer <router password>` on every request except the
+- **Authentication**: `Authorization: Bearer <password>` on every request except the
   landing page. This is what OpenAI SDKs send for `api_key`. No other scheme is accepted
   (`x-api-key`, Basic and an empty bearer count as no credential).
+  `/v1/*` accepts the shared user password or admin password. `/control/*` accepts only the admin password.
 - **Provider keys stay on the server.** Clients never send Anthropic, Gemini, OpenRouter or OpenAI keys;
   the gateway uses the key configured for the provider (a key stored with `mrouter keys set`
   overrides the environment variable).
@@ -27,7 +28,7 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 | `GET /control/errors?limit=N&kind=auth\|upstream\|gateway` | Recent events, newest first (the newest 200 are kept) |
 
 Missing credentials return 401 even when server configuration is invalid.
-Configuration details require a verified password and a working limiter store.
+Configuration details require a verified admin password and a working limiter store.
 If authentication cannot run, a presented credential receives a generic 503 without configuration details.
 
 Unknown paths under `/v1/` and `/control/` answer 404 and wrong methods 405, but only after
@@ -320,6 +321,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 400 | `key_rejected` | `PUT /control/keys` with `verify`: the provider rejected the key; it was not stored | no: check the key |
 | 401 | `missing_credentials` | no bearer credential | no: send the password |
 | 401 | `invalid_credentials` | wrong password | no: repeated failures slow down and then block the source |
+| 403 | `admin_required` | shared user password sent to a control route | no: use the admin password |
 | 403 | `cross_origin_forbidden` | foreign browser origin or cross-site fetch | no |
 | 404 | `not_found` | unknown path | no |
 | 405 | `method_not_allowed` | wrong method (`Allow` lists the right one) | no |
@@ -458,3 +460,19 @@ selects a behavior, for example `claude-fake-429`, `gemini-fake-midstream-error`
 To run against PostgreSQL instead of the memory store, replace `ROUTER_STORE=memory` with
 `DATABASE_URL=<URL of a local database>` and migrate that database first (`DEPLOY.md` step 3.1).
 Outside production, a URL without TLS is accepted only for a loopback host or a unix socket.
+
+## Owner access
+
+Set `ROUTER_ADMIN_PASSWORD_HASH` or `ROUTER_ADMIN_PASSWORD`, never both.
+The format, minimum length, newline handling and verification rules match the user credential.
+Use distinct passwords; a credential that matches the user password cannot gain admin access.
+Admin configuration errors affect `/control/*` only.
+Missing admin configuration returns 503 `server_misconfigured`, naming the admin variables.
+A request with no bearer credential still returns 401.
+
+Every control path and rewrite requires admin access, including health, key verification, usage and errors.
+The shared user password returns 403 `admin_required` without recording a failed-password attempt.
+Unknown passwords use the same source limiter for both roles.
+The admin password also works for chat and the model list.
+All success and failure responses redact both credentials.
+The health endpoint exposes no public or user-level health details.

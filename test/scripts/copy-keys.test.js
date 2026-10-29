@@ -628,3 +628,10 @@ test('the manifest accepts OpenAI and all provider fallback names', () => {
   const result = validateManifest({ version: 1, environment: 'production', project: PROJECT, entries });
   assert.deepEqual(result.entries.map((entry) => entry.env), names);
 });
+
+test('admin passwords accept stdin hashing and cannot combine plaintext with a hash', () => {
+  const base = { version: 1, environment: 'production', project: PROJECT };
+  const entry = { env: 'ROUTER_ADMIN_PASSWORD_HASH', source: { type: 'stdin' }, transform: 'scrypt-hash' };
+  assert.equal(validateManifest({ ...base, entries: [entry] }).entries[0].transform, 'scrypt-hash');
+  assert.throws(() => validateManifest({ ...base, entries: [entry, { env: 'ROUTER_ADMIN_PASSWORD', source: KEYCHAIN }] }), /not both/);
+});

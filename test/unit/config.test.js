@@ -170,3 +170,19 @@ test('OpenAI and all fallback environment keys are validated and scrubbed', asyn
   assert.equal(loadConfig(env).providers.openai.baseUrl, 'https://api.openai.com');
   assert.equal(loadConfig({ ...env, OPENAI_BASE_URL: 'http://127.0.0.1:1234' }).providers.openai.baseUrl, 'http://127.0.0.1:1234');
 });
+
+test('admin credentials have independent scrypt, plaintext, conflict and newline validation', async () => {
+  const base = await baseEnv();
+  const hash = base.ROUTER_ADMIN_PASSWORD_HASH;
+  for (const ending of ['\n', '\r\n']) {
+    assert.deepEqual(loadConfig({ ...base, ROUTER_ADMIN_PASSWORD_HASH: hash + ending }).adminProblems, []);
+    assert.equal(loadConfig({ ...base, ROUTER_ADMIN_PASSWORD_HASH: '', ROUTER_ADMIN_PASSWORD: `owner-password${ending}` }).adminPassword, 'owner-password');
+  }
+  for (const extra of [{ ROUTER_ADMIN_PASSWORD_HASH: '' }, { ROUTER_ADMIN_PASSWORD_HASH: 'bad' }, { ROUTER_ADMIN_PASSWORD: 'owner-password' }, { ROUTER_ADMIN_PASSWORD_HASH: '', ROUTER_ADMIN_PASSWORD: 'short' }]) {
+    const config = loadConfig({ ...base, ...extra });
+    assert.ok(config.adminProblems.length);
+    assert.deepEqual(config.problems, []);
+  }
+  const config = loadConfig({ ...base, ROUTER_ADMIN_PASSWORD_HASH: '', ROUTER_ADMIN_PASSWORD: 'owner-password' });
+  assert.ok(config.secrets.includes('owner-password'));
+});

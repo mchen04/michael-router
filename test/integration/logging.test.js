@@ -8,7 +8,7 @@ import { after, before, test } from 'node:test';
 import { startFakeProviders } from '../../dev/fake-providers.js';
 import { EXCEPTION_FIELDS, LOG_FIELDS } from '../../src/log.js';
 import { REDACTED } from '../../src/redact.js';
-import { ENV_KEYS, PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
+import { ENV_KEYS, ADMIN_PASSWORD as PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
 import { dumpRouterTables, generatedPassword, migrate, startPostgres } from '../helpers/postgres.js';
 import { startDevServer } from '../helpers/processes.js';
 
@@ -49,7 +49,7 @@ before(async () => {
       },
       ['--upstream-timeout-ms', '400'],
     ),
-    startDevServer({ ROUTER_PASSWORD: PLAIN_PASSWORD, ROUTER_SECRET, ROUTER_STORE: 'memory', ...ENV_KEYS, ...providers.env }),
+    startDevServer({ ROUTER_ADMIN_PASSWORD_HASH: '', ROUTER_ADMIN_PASSWORD: PLAIN_PASSWORD, ROUTER_PASSWORD: 'shared-friend-SENTINEL-password', ROUTER_SECRET, ROUTER_STORE: 'memory', ...ENV_KEYS, ...providers.env }),
   ]);
 });
 after(async () => {

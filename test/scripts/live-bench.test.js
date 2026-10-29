@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { containsPassword } from '../../scripts/live-smoke.mjs';
 import { SMOKE_MODELS } from '../../src/pricing.js';
 import { SECRET_MARKER, startRouterStack } from '../helpers/cli.js';
-import { PASSWORD } from '../helpers/fixtures.js';
+import { ADMIN_PASSWORD as PASSWORD } from '../helpers/fixtures.js';
 
 const SCRIPT = fileURLToPath(new URL('../../bench/live.mjs', import.meta.url));
 

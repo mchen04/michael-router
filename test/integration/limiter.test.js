@@ -3,7 +3,7 @@
 // store behaviour is covered in store-postgres.test.js.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
+import { PASSWORD as USER_PASSWORD, ADMIN_PASSWORD as PASSWORD, ROUTER_SECRET, WRONG_PASSWORD, passwordHash } from '../helpers/fixtures.js';
 import { migrate, startPostgres, withClient } from '../helpers/postgres.js';
 import { startDevServer } from '../helpers/processes.js';
 import { loadConfig } from '../../src/config.js';
@@ -29,7 +29,7 @@ let url;
 
 before(async () => {
   // A slower scrypt (16 MiB, tens of ms) keeps evaluations in flight while the burst arrives.
-  const hash = await passwordHash(PASSWORD, { logN: 14, r: 8, p: 1 });
+  const hash = await passwordHash(USER_PASSWORD, { logN: 14, r: 8, p: 1 });
   cluster = await startPostgres();
   url = await cluster.createDatabase('limiter');
   await migrate(url);

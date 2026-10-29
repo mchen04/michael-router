@@ -1,11 +1,15 @@
 # Michael Router
 
-Michael Router is a password-protected gateway that speaks the OpenAI Chat Completions API and
+Michael Router is a gateway with separate user and owner passwords that speaks the OpenAI Chat Completions API and
 forwards each request to Claude (Anthropic Messages API), Gemini, OpenRouter or OpenAI, chosen by the
 request's `model` name. It runs as one Vercel function, keeps its state (stored key overrides,
 usage counters, the wrong-password limiter and recent errors) in a PostgreSQL database (schema
 `michael_router`), records usage and cost per provider and model, and comes with a command-line
-client, `mrouter`.
+owner-only client, `mrouter`.
+
+Friends receive only the user password and may call `/v1/*`.
+Only the separate admin password grants access to `/control/*`.
+Do not share the admin password or the owner CLI configuration.
 
 ## Routing
 
@@ -83,3 +87,17 @@ The access password exists only as a Vercel sensitive environment variable
 (`ROUTER_PASSWORD_HASH`, a scrypt hash, or `ROUTER_PASSWORD`), never in the repository. Provider
 keys come from environment variables or are stored encrypted on the router, and are never
 accepted as command arguments or written to logs.
+
+## Owner credential
+
+Set exactly one of `ROUTER_ADMIN_PASSWORD_HASH` or `ROUTER_ADMIN_PASSWORD` on the server.
+Use a different password from the shared user password.
+The hash uses the same scrypt format and helper as `ROUTER_PASSWORD_HASH`.
+Without an admin credential, control routes fail closed with 503; user chat remains available.
+The shared user password receives 403 `admin_required` on control routes without adding a failed-password attempt.
+Both roles share the wrong-password limiter.
+
+The owner CLI reads `MROUTER_ADMIN_PASSWORD` or the separate credential saved by `mrouter login`.
+Chat can use `MROUTER_PASSWORD` or the admin credential.
+The smoke script reads the user password from stdin and the admin password from `MR_ADMIN_PASSWORD`.
+See `docs/DEPLOY.md` for a separate admin-key transfer manifest.

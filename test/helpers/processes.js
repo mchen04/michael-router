@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { OFFLINE_BASE_URLS } from './fixtures.js';
+import { ADMIN_PASSWORD, OFFLINE_BASE_URLS, passwordHash } from './fixtures.js';
 
 export const DEV_SERVER = fileURLToPath(new URL('../../dev/server.js', import.meta.url));
 
@@ -50,4 +50,4 @@ export async function startProcess(script, args = [], env = {}) {
 }
 
 /** @param {Record<string, string>} env @param {string[]} [flags] */
-export const startDevServer = (env, flags = []) => startProcess(DEV_SERVER, ['--port', '0', ...flags], { ...OFFLINE_BASE_URLS, ...env });
+export const startDevServer = async (env, flags = []) => startProcess(DEV_SERVER, ['--port', '0', ...flags], { ...OFFLINE_BASE_URLS, ROUTER_ADMIN_PASSWORD_HASH: await passwordHash(ADMIN_PASSWORD), ...env });

@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeProviders } from '../../dev/fake-providers.js';
-import { ENV_KEYS, PASSWORD, ROUTER_SECRET, passwordHash } from './fixtures.js';
+import { ENV_KEYS, ADMIN_PASSWORD, PASSWORD, ROUTER_SECRET, passwordHash } from './fixtures.js';
 import { startDevServer } from './processes.js';
 
 export const CLI = fileURLToPath(new URL('../../cli/mrouter.js', import.meta.url));
@@ -178,7 +178,7 @@ export async function startRouterStack(env = {}) {
 /** A home logged in to `url` with the fixture password (via stdin). @param {string} url */
 export async function loggedInHome(url) {
   const home = await makeHome();
-  const r = await runCli(['login', '--url', url], { home, input: `${PASSWORD}\n` });
+  const r = await runCli(['login', '--url', url], { home, input: `${ADMIN_PASSWORD}\n` });
   assert.equal(r.code, 0, r.stderr);
   return home;
 }
@@ -190,7 +190,7 @@ export async function loggedInHome(url) {
  */
 export async function waitForJson(url, path, check) {
   for (let i = 0; i < 100; i++) {
-    const json = await (await fetch(url + path, { headers: { authorization: `Bearer ${PASSWORD}` } })).json();
+    const json = await (await fetch(url + path, { headers: { authorization: `Bearer ${ADMIN_PASSWORD}` } })).json();
     if (check(json)) return json;
     await new Promise((r) => setTimeout(r, 20));
   }

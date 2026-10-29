@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { makeHome, finishCliSuite, runCli } from '../helpers/cli.js';
-import { baseEnv, PASSWORD } from '../helpers/fixtures.js';
+import { baseEnv, ADMIN_PASSWORD, PASSWORD } from '../helpers/fixtures.js';
 import { startDevServer } from '../helpers/processes.js';
 
 const key = 'sk-fake-SENTINEL-openai-smoke';
@@ -27,7 +27,7 @@ test('OpenAI keys set/list/unset, CLI chat and live smoke use only the local fak
   });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
   const router = await startDevServer(await baseEnv({ OPENAI_BASE_URL: `http://127.0.0.1:${upstream.address().port}` }));
-  const env = { MROUTER_URL: router.url, MROUTER_PASSWORD: PASSWORD };
+  const env = { MROUTER_URL: router.url, MROUTER_ADMIN_PASSWORD: ADMIN_PASSWORD };
   try {
     const set = await runCli(['keys', 'set', 'openai'], { home, env, input: key });
     assert.equal(set.code, 0, set.stderr);
@@ -39,7 +39,7 @@ test('OpenAI keys set/list/unset, CLI chat and live smoke use only the local fak
     assert.match(ask.stdout, /pong/);
     const out = path.join(home, 'smoke.json');
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['scripts/live-smoke.mjs', '--url', router.url, '--providers', 'openai', '--out', out], { env: { HOME: home }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, ['scripts/live-smoke.mjs', '--url', router.url, '--providers', 'openai', '--out', out], { env: { HOME: home, MR_ADMIN_PASSWORD: ADMIN_PASSWORD }, stdio: ['pipe', 'pipe', 'pipe'] });
       let stderr = '';
       child.stderr.on('data', (data) => { stderr += data; });
       child.stdin.end(PASSWORD);

@@ -9,7 +9,7 @@ import { routeModel } from '../../src/routing.js';
 import { usageDays } from '../../src/usage.js';
 import { intFlag } from './args.js';
 import { consumeStream, requestCost, streamFailure } from './chat.js';
-import { deleteCredentials, fileMode, passwordShapeOk, writeConfig, writeCredentials } from './config.js';
+import { deleteAdminCredentials, deleteCredentials, fileMode, passwordShapeOk, writeAdminCredentials, writeConfig } from './config.js';
 import { CliError, EXIT, usageError } from './errors.js';
 import { clean, createClient } from './http.js';
 import { readStdinText } from './prompt.js';
@@ -59,7 +59,7 @@ function noArguments(ctx, message = `${ctx.path.join(' ')} takes no arguments`) 
 async function login(ctx) {
   noArguments(ctx, 'login takes no arguments; the password is read from the prompt or stdin, never from arguments');
   const { url } = await ctx.resolveUrl();
-  const password = ctx.secret(await ctx.readSecret('Router password: ', 'password'));
+  const password = ctx.secret(await ctx.readSecret('Admin password: ', 'admin password'));
   checkPasswordShape(password, 'the password');
   const client = createClient({ url, password, timeoutMs: ctx.timeoutMs(CONTROL_TIMEOUT_S) });
   let health;
@@ -72,19 +72,22 @@ async function login(ctx) {
   if (!health || health.status !== 'ok') throw new CliError(`unexpected /control/health response from ${url}; nothing was saved`);
   // The old password goes first, so a failure part-way never leaves it paired with the new URL.
   await deleteCredentials(ctx.paths);
+  await deleteAdminCredentials(ctx.paths);
   await writeConfig(ctx.paths, { url });
-  await writeCredentials(ctx.paths, password);
-  if (ctx.json) return ctx.printJson({ url, config: ctx.paths.config, credentials: ctx.paths.credentials });
-  ctx.print(`Logged in to ${url}.\nThe password is stored in ${ctx.paths.credentials} (mode 0600).\n`);
+  await writeAdminCredentials(ctx.paths, password);
+  if (ctx.json) return ctx.printJson({ url, config: ctx.paths.config, admin_credentials: ctx.paths.adminCredentials });
+  ctx.print(`Logged in to ${url}.\nThe admin password is stored in ${ctx.paths.adminCredentials} (mode 0600).\n`);
 }
 
 /** @param {Context} ctx */
 async function logout(ctx) {
   noArguments(ctx);
-  const removed = await deleteCredentials(ctx.paths);
-  if (ctx.json) return ctx.printJson({ removed, credentials: ctx.paths.credentials });
-  ctx.print(removed ? `Removed the stored password (${ctx.paths.credentials}).\n` : 'No stored password.\n');
-  if (ctx.env.MROUTER_PASSWORD) ctx.warn('MROUTER_PASSWORD is still set in this environment');
+  const userRemoved = await deleteCredentials(ctx.paths);
+  const adminRemoved = await deleteAdminCredentials(ctx.paths);
+  const removed = userRemoved || adminRemoved;
+  if (ctx.json) return ctx.printJson({ removed, admin_credentials: ctx.paths.adminCredentials });
+  ctx.print(removed ? `Removed the stored password (${adminRemoved ? ctx.paths.adminCredentials : ctx.paths.credentials}).\n` : 'No stored password.\n');
+  for (const name of ['MROUTER_PASSWORD', 'MROUTER_ADMIN_PASSWORD']) if (ctx.env[name]) ctx.warn(`${name} is still set in this environment`);
 }
 
 /** @param {Context} ctx */
@@ -93,34 +96,34 @@ async function status(ctx) {
   const { paths } = ctx;
   const config = await ctx.config();
   const target = await ctx.resolveUrl({ required: false });
-  const [dirMode, configMode, credMode] = await Promise.all([fileMode(paths.dir), fileMode(paths.config), fileMode(paths.credentials)]);
-  if (credMode !== null && credMode & 0o077) ctx.warn(`${paths.credentials} is accessible by other users (mode ${credMode.toString(8).padStart(4, '0')}); run: chmod 600 '${paths.credentials}'`);
+  const [dirMode, configMode, credMode] = await Promise.all([fileMode(paths.dir), fileMode(paths.config), fileMode(paths.adminCredentials)]);
+  if (credMode !== null && credMode & 0o077) ctx.warn(`${paths.adminCredentials} is accessible by other users (mode ${credMode.toString(8).padStart(4, '0')}); run: chmod 600 '${paths.adminCredentials}'`);
   const stored = credMode !== null;
-  const env = Boolean(ctx.env.MROUTER_PASSWORD);
+  const env = Boolean(ctx.env.MROUTER_ADMIN_PASSWORD);
   const storedFor = stored ? (config.url ?? null) : null;
   const usable = env || (stored && target !== null && storedFor === target.url);
   if (ctx.json) {
     return ctx.printJson({
       url: target?.url ?? null,
       url_source: target?.source ?? null,
-      password: { stored, stored_for: storedFor, env, usable },
-      paths: { dir: paths.dir, config: paths.config, credentials: paths.credentials },
+      admin_password: { stored, stored_for: storedFor, env, usable },
+      paths: { dir: paths.dir, config: paths.config, admin_credentials: paths.adminCredentials },
     });
   }
   /** @param {number | null} mode */
   const mode = (mode) => (mode === null ? 'missing' : `mode ${mode.toString(8).padStart(4, '0')}`);
   let password = "not stored (run 'mrouter login')";
-  if (env) password = 'from MROUTER_PASSWORD (overrides any stored password)';
+  if (env) password = 'from MROUTER_ADMIN_PASSWORD (overrides any stored password)';
   else if (stored && usable) password = 'stored';
   else if (stored) password = `stored for ${storedFor ?? 'an unknown URL'} only (not sent to other URLs)`;
   ctx.print(
     renderPairs(
       [
         ['URL', target ? `${target.url} (from ${target.source})` : "not set (use --url, MROUTER_URL or 'mrouter login --url URL')"],
-        ['Password', password],
+        ['Admin password', password],
         ['Config dir', `${paths.dir} (${mode(dirMode)})`],
         ['config.json', `${paths.config} (${mode(configMode)})`],
-        ['credentials', `${paths.credentials} (${mode(credMode)})`],
+        ['admin-credentials', `${paths.adminCredentials} (${mode(credMode)})`],
       ],
       ctx.c,
     ),
@@ -132,7 +135,7 @@ async function status(ctx) {
 /** @param {Context} ctx */
 async function health(ctx) {
   noArguments(ctx);
-  const client = await ctx.client(CONTROL_TIMEOUT_S);
+  const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const { json: h, totalMs } = await client.get('/control/health');
   if (ctx.json) return ctx.printJson(h);
   const providers = Object.entries(h.providers ?? {})
@@ -158,7 +161,7 @@ async function health(ctx) {
 /** @param {Context} ctx */
 async function keysList(ctx) {
   noArguments(ctx);
-  const client = await ctx.client(CONTROL_TIMEOUT_S);
+  const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const { json } = await client.get('/control/keys');
   if (ctx.json) return ctx.printJson(json);
   const rows = (Array.isArray(json) ? json : []).map((k) => [
@@ -174,7 +177,7 @@ async function keysList(ctx) {
 async function keysSet(ctx) {
   const provider = providerArg(ctx, true);
   const verify = !ctx.flags['no-verify'];
-  const client = await ctx.client(CONTROL_TIMEOUT_S);
+  const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const key = ctx.secret(await ctx.readSecret(`${provider} API key: `, `${provider} key`));
   const problem = providerKeyProblem(key);
   if (problem) throw usageError(`invalid ${provider} key: ${problem}; nothing was sent`);
@@ -213,7 +216,7 @@ function keyNotStored(err, provider) {
 /** @param {Context} ctx */
 async function keysUnset(ctx) {
   const provider = providerArg(ctx, false);
-  const client = await ctx.client(CONTROL_TIMEOUT_S);
+  const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const { json: r } = await client.request('DELETE', `/control/keys/${provider}`);
   if (ctx.json) return ctx.printJson(r);
   const now = r.source === 'env' ? 'the environment key' : ctx.c.yellow('no key (the provider is not configured)');
@@ -247,7 +250,7 @@ async function usage(ctx) {
       throw usageError(`--${err.message.replace(/\.$/, '')}`);
     }
   }
-  const client = await ctx.client(CONTROL_TIMEOUT_S);
+  const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const query = since !== undefined ? `since=${since}` : `days=${days ?? 30}`;
   const { json: u } = await client.get(`/control/usage?${query}`);
   if (ctx.json) return ctx.printJson(u);
@@ -286,7 +289,7 @@ async function errors(ctx) {
   const limit = intFlag(ctx.flags.limit, 'limit', 1, 200);
   const kind = ctx.flags.kind;
   if (kind !== undefined && !(typeof kind === 'string' && EVENT_KINDS.includes(kind))) throw usageError(`--kind must be one of: ${EVENT_KINDS.join(', ')}`);
-  const client = await ctx.client(CONTROL_TIMEOUT_S);
+  const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const { json } = await client.get(`/control/errors?limit=${limit ?? 50}${kind ? `&kind=${kind}` : ''}`);
   if (ctx.json) return ctx.printJson(json);
   const events = Array.isArray(json) ? json : [];
@@ -468,7 +471,7 @@ async function test(ctx) {
       throw usageError(`--model ${modelFlag} routes to ${modelProvider}; give no provider or only that one`);
     }
   }
-  const client = await ctx.client(CHAT_TIMEOUT_S);
+  const client = await ctx.client(CHAT_TIMEOUT_S, !modelFlag && !requested.length);
   let providers = modelProvider ? [modelProvider] : requested;
   if (!providers.length) {
     const { json: h } = await client.get('/control/health');

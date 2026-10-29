@@ -622,3 +622,14 @@ Costs remain estimates; regional premiums, other service tiers and 12-hour write
 Missing credentials return 401 even during misconfiguration.
 Configuration details require both password verification and the shared limiter.
 If either cannot run, a presented credential receives a generic 503 without variable names.
+
+## Owner credential boundary
+
+`/v1/*` accepts either the user or admin password.
+`/control/*` requires admin access, including all rewritten paths and detailed health.
+Configuration holds independent admin hash, plaintext and validation problems.
+Admin configuration problems do not block the user API.
+The shared limiter runs before either password verifier.
+A recognized user credential returns 403 `admin_required` on control routes without recording a password failure.
+A credential matching both roles stays user-only, so passwords must differ.
+The CLI stores its owner password separately and never falls back to the user password for control requests.

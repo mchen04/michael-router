@@ -186,5 +186,5 @@ test('verifyPassword is the real scrypt verifier by default', async () => {
   });
   assert.equal((await h.call('/control/health', { headers: bearer() })).status, 200);
   assert.equal((await h.call('/control/health', { headers: bearer() })).status, 200);
-  assert.equal(calls, 1, 'second request hits the per-instance verified cache');
+  assert.equal(calls, 3, 'the admin result is cached; the nonmatching user credential is checked each time');
 });

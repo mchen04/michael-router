@@ -106,6 +106,21 @@ export function loadConfig(env = {}) {
     if (!passwordHash) problems.push(passwordHashRaw === undefined ? PASSWORD_VARS_NAME : 'ROUTER_PASSWORD_HASH');
   }
 
+  const adminHashRaw = read(env, 'ROUTER_ADMIN_PASSWORD_HASH')?.replace(/\r?\n$/, '');
+  const adminRaw = read(env, 'ROUTER_ADMIN_PASSWORD')?.replace(/\r?\n$/, '');
+  const adminProblems = [];
+  let adminPasswordHash = null;
+  let adminPassword = null;
+  if (adminHashRaw !== undefined && adminRaw !== undefined) {
+    adminProblems.push('ROUTER_ADMIN_PASSWORD_HASH', 'ROUTER_ADMIN_PASSWORD');
+  } else if (adminRaw !== undefined) {
+    if (adminRaw.length >= MIN_PASSWORD_LENGTH) adminPassword = adminRaw;
+    else adminProblems.push('ROUTER_ADMIN_PASSWORD');
+  } else {
+    adminPasswordHash = parsePasswordHash(adminHashRaw);
+    if (!adminPasswordHash) adminProblems.push(adminHashRaw === undefined ? 'ROUTER_ADMIN_PASSWORD_HASH/ROUTER_ADMIN_PASSWORD' : 'ROUTER_ADMIN_PASSWORD_HASH');
+  }
+
   const secretRaw = read(env, 'ROUTER_SECRET');
   const secret = decodeSecret(secretRaw);
   if (!secret) problems.push('ROUTER_SECRET');
@@ -154,6 +169,8 @@ export function loadConfig(env = {}) {
   const trust = read(env, 'TRUST_PROXY_HEADERS');
   // Configured secret values the redactor always scrubs.
   const secrets = [
+    adminHashRaw,
+    adminRaw,
     passwordHashRaw,
     passwordRaw,
     secretRaw,
@@ -165,6 +182,9 @@ export function loadConfig(env = {}) {
     production,
     problems,
     passwordConflict,
+    adminProblems,
+    adminPasswordHash,
+    adminPassword,
     passwordHash,
     password,
     keyEncryptionKey: derive('provider-keys-v1'),

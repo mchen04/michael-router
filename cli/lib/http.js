@@ -82,7 +82,7 @@ export function responseError(res, text) {
   }
   if (source === 'gateway') {
     const text = `router refused the request (HTTP ${res.status}, ${code}): ${message}${retry}`;
-    if (res.status === 401 || res.status === 429) {
+    if (res.status === 401 || res.status === 429 || code === 'admin_required') {
       const hint = code === 'invalid_credentials' ? "run 'mrouter login' or check MROUTER_PASSWORD" : undefined;
       return new CliError(text, EXIT.GATEWAY, { ...info, hint });
     }
@@ -177,7 +177,9 @@ export function createClient({ url, password, timeoutMs }) {
       } catch (err) {
         throw networkError(err, origin, timeoutMs, true);
       }
-      throw responseError(res, text);
+      const error = responseError(res, text);
+      if (path.startsWith('/control/') && error.hint) error.hint = error.hint.replace('MROUTER_PASSWORD', 'MROUTER_ADMIN_PASSWORD');
+      throw error;
     }
     return { res, t0 };
   }

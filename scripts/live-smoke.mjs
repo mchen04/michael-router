@@ -156,7 +156,7 @@ function overlaps(text, password) {
 /**
  * One chat completion. Never throws.
  * @param {ReturnType<typeof client>} c @param {string} provider @param {string} model @param {'non-stream' | 'stream' | 'tool-call'} mode
- * @param {string} password
+ * @param {string[]} password
  */
 async function chat(c, provider, model, mode, password) {
   const stream = mode === 'stream';
@@ -221,7 +221,7 @@ async function chat(c, provider, model, mode, password) {
     call.finish_reason = typeof choice.finish_reason === 'string' ? clean(choice.finish_reason) : null;
     const tools = Array.isArray(choice.message?.tool_calls) ? choice.message.tool_calls.map((/** @type {any} */ t) => clean(t?.function?.name)) : [];
     const reply = snippet(tools.length ? `tool_calls: ${tools.join(', ')}` : choice.message?.content);
-    call.reply = overlaps(reply, password) ? null : reply;
+    call.reply = password.some((secret) => overlaps(reply, secret)) ? null : reply;
     if (mode === 'tool-call' && call.result === 'ok' && !tools.includes('get_time')) call.result = 'no_tool_call';
   }
   call.ok = call.result === 'ok';
@@ -356,7 +356,7 @@ function parseArgs(argv) {
 
 const USAGE =
   'usage: node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai] [--probe-wrong-password]\n' +
-  'The password is read from MROUTER_PASSWORD, else from stdin or a hidden prompt. --probe-wrong-password also sends one wrong\n' +
+  'The user password is read from MROUTER_PASSWORD, else from stdin or a hidden prompt. Set MR_ADMIN_PASSWORD separately. --probe-wrong-password also sends one wrong\n' +
   'password (expects 401); it counts a failed attempt for this source.';
 
 /** @param {string[]} argv */
@@ -381,14 +381,20 @@ export async function main(argv) {
     }
   }
   if (!/^[\x20-\x7e]+$/.test(password) || password !== password.trim()) throw new UsageError('the password must be printable ASCII without leading or trailing spaces');
+  const adminPassword = process.env.MR_ADMIN_PASSWORD;
+  if (!adminPassword || !/^[\x20-\x7e]+$/.test(adminPassword) || adminPassword !== adminPassword.trim()) {
+    throw new UsageError('MR_ADMIN_PASSWORD must supply a separate admin password.');
+  }
+  const secrets = [password, adminPassword];
   const startedAt = new Date();
   const stamp = startedAt.toISOString().replace(/[:.]/g, '-');
   const outJson = path.resolve(opts.out ?? path.join(ROOT, 'evidence', 'live', `${stamp}.json`));
   const outMd = outJson.endsWith('.json') ? `${outJson.slice(0, -5)}.md` : `${outJson}.md`;
   const live = !LOOPBACK.has(new URL(origin).hostname);
-  const c = client(origin, { password });
+  const c = client(origin, { password: adminPassword });
+  const chatClient = client(origin, { password });
   /** Progress on stderr, withheld if it would show the password. @param {string} line */
-  const progress = (line) => process.stderr.write(`${containsPassword(password, null, line) ? '(progress line withheld: it contains the router password)' : line}\n`);
+  const progress = (line) => process.stderr.write(`${secrets.some((secret) => containsPassword(secret, null, line)) ? '(progress line withheld: it contains the router password)' : line}\n`);
 
   /** @type {Record<string, any>} */
   const ev = { tool: 'scripts/live-smoke.mjs', router_cli_version: VERSION, started_at: startedAt.toISOString(), target: { origin, live }, result: null, diagnosis: null, calls: [], control: {} };
@@ -400,12 +406,14 @@ export async function main(argv) {
   if (!ev.diagnosis) {
     const keys = await c.request('/control/keys');
     ev.control.keys = { ...control(keys, (r) => r.status === 200 && Array.isArray(r.json)), keys: !('network' in keys) && Array.isArray(keys.json) ? keys.json : null };
+    const userControl = await c.request('/control/keys', { password });
+    ev.control.user_control = control(userControl, (r) => r.status === 403 && errorCode(r.json) === 'admin_required');
     const configured = new Set((ev.control.keys.keys ?? []).filter((/** @type {any} */ k) => k?.configured).map((/** @type {any} */ k) => k.provider));
     for (const provider of opts.providers ?? PROVIDER_IDS) {
       const model = SMOKE_MODELS[/** @type {keyof typeof SMOKE_MODELS} */ (provider)];
       const modes = /** @type {const} */ (provider === 'claude' ? ['non-stream', 'stream', 'tool-call'] : ['non-stream', 'stream']);
       for (const mode of modes) {
-        const call = configured.has(provider) ? await chat(c, provider, model, mode, password) : { provider, model, mode, ok: false, result: 'provider_not_configured', http_status: null };
+        const call = configured.has(provider) ? await chat(chatClient, provider, model, mode, secrets) : { provider, model, mode, ok: false, result: 'provider_not_configured', http_status: null };
         ev.calls.push(call);
         progress(`${provider} ${mode}: ${call.result}${call.http_status ? ` (HTTP ${call.http_status})` : ''}`);
       }
@@ -423,7 +431,7 @@ export async function main(argv) {
     ev.control.unauthenticated = control(anonymous, (r) => r.status === 401 && errorCode(r.json) === 'missing_credentials');
     if (opts.probeWrongPassword) {
       let wrong = `smoke-wrong-${randomBytes(12).toString('hex')}`;
-      if (wrong === password) wrong += 'x';
+      if (secrets.includes(wrong)) wrong += 'x';
       const rejected = await c.request('/control/health', { password: wrong });
       ev.control.wrong_password = { ...control(rejected, (r) => r.status === 401 && errorCode(r.json) === 'invalid_credentials'), note: 'counts one failed attempt for this source' };
     }
@@ -436,7 +444,7 @@ export async function main(argv) {
 
   const json = `${JSON.stringify(ev, null, 2)}\n`;
   const md = markdown(ev);
-  if (containsPassword(password, ev, json, md)) {
+  if (secrets.some((secret) => containsPassword(secret, ev, json, md))) {
     process.stderr.write('live-smoke: aborted: the evidence contains the router password; nothing was written\n');
     return EXIT.LEAK;
   }
