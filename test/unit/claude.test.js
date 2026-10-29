@@ -477,3 +477,9 @@ test('stream: a tool call with no input fragments ends with arguments "{}", like
   assert.deepEqual(args, { 0: '{}', 1: '{}', 2: '{"a":1}' });
   for (const [index, a] of Object.entries(args)) assert.doesNotThrow(() => JSON.parse(a), `tool call ${index}`);
 });
+
+test('no default effort for a Claude model that does not accept it; an explicit value is still sent', () => {
+  assert.equal(build({}, 'claude-haiku-4-5').body.output_config, undefined);
+  assert.equal(build({ reasoning_effort: 'high' }, 'claude-haiku-4-5').body.output_config.effort, 'high');
+  assert.equal(build({}, 'claude-haiku-5-5').body.output_config.effort, 'medium');
+});
