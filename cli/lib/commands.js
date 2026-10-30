@@ -1,12 +1,14 @@
 // Every mrouter command (DESIGN §9). Each `run(ctx)` prints its result (a table, or the JSON with
 // --json) and throws a CliError for a nonzero exit, after printing whatever result it has.
+import { Buffer } from 'node:buffer';
+import { writeFile } from 'node:fs/promises';
 import { hashPassword } from '../../src/auth.js';
 import { MIN_PASSWORD_LENGTH, PROVIDER_IDS, providerKeyProblem } from '../../src/config.js';
 import { EVENT_KINDS } from '../../src/events.js';
-import { SMOKE_MODELS } from '../../src/pricing.js';
+import { SMOKE_MODELS, costOf } from '../../src/pricing.js';
 import { GatewayError } from '../../src/http.js';
-import { routeModel } from '../../src/routing.js';
-import { usageDays } from '../../src/usage.js';
+import { routeImageModel, routeModel } from '../../src/routing.js';
+import { normalizeImageUsage, usageDays } from '../../src/usage.js';
 import { intFlag } from './args.js';
 import { consumeStream, requestCost, streamFailure } from './chat.js';
 import { deleteAdminCredentials, deleteCredentials, fileMode, passwordShapeOk, writeAdminCredentials, writeConfig } from './config.js';
@@ -20,11 +22,13 @@ import { costMarker, costWords, fmtInt, fmtMs, fmtTime, renderPairs, renderTable
 export const KEY_ARGUMENT_REFUSAL = 'provider keys are never accepted as arguments; pipe them on stdin or use the prompt';
 export const PASSWORD_ARGUMENT_REFUSAL = 'passwords are never accepted as arguments; pipe them on stdin or use the prompt';
 export const DEFAULT_ASK_MODEL = SMOKE_MODELS.gemini;
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-1-mini';
 export const SMOKE_PROMPT = 'Reply with the single word: pong';
 const SMOKE_MAX_TOKENS = 256;
 const CONTROL_TIMEOUT_S = 30;
 const CHAT_TIMEOUT_S = 300;
 const SAFE_WORD = /^[a-z][a-z0-9-]{0,23}$/;
+const IMAGE_EXTENSIONS = { png: 'png', jpeg: 'jpg', webp: 'webp' };
 
 /** @param {unknown} v */
 const yesNo = (v) => (v ? 'yes' : 'no');
@@ -411,6 +415,51 @@ async function ask(ctx) {
   footer(ctx, provider, model, requestCost(provider, model, r.response.usage), { ...r, servedModel: r.response.model, finish: r.response.choices[0].finish_reason });
 }
 
+/** @param {Context} ctx */
+async function image(ctx) {
+  const model = typeof ctx.flags.model === 'string' ? ctx.flags.model : DEFAULT_IMAGE_MODEL;
+  try {
+    routeImageModel(model);
+  } catch (err) {
+    if (!(err instanceof GatewayError)) throw err;
+    throw usageError(err.message.replace(/\.$/, ''));
+  }
+  const n = intFlag(ctx.flags.n, 'n', 1, 10);
+  const prompt = ctx.positionals.join(' ');
+  if (prompt.trim() === '') throw usageError('no prompt: pass it as arguments');
+  const out = typeof ctx.flags.out === 'string' ? ctx.flags.out : 'image';
+  /** @type {Record<string, unknown>} */
+  const body = { model, prompt };
+  if (n) body.n = n;
+  for (const name of ['size', 'quality', 'format']) {
+    if (typeof ctx.flags[name] === 'string') body[name === 'format' ? 'output_format' : name] = ctx.flags[name];
+  }
+  const client = await ctx.client(CHAT_TIMEOUT_S);
+  const { res, json, ttfbMs, totalMs } = await client.request('POST', '/v1/images/generations', body);
+  const provider = res.headers.get('x-router-provider') ?? '';
+  const data = Array.isArray(json?.data) ? json.data : [];
+  const format = /** @type {keyof typeof IMAGE_EXTENSIONS} */ (String(json?.output_format ?? body.output_format ?? 'png'));
+  const extension = Object.hasOwn(IMAGE_EXTENSIONS, format) ? IMAGE_EXTENSIONS[format] : 'png';
+  const files = [];
+  for (const [i, item] of data.entries()) {
+    if (typeof item?.b64_json !== 'string') continue;
+    const file = `${out}-${i + 1}.${extension}`;
+    try {
+      await writeFile(file, Buffer.from(item.b64_json, 'base64'), { flag: 'wx' });
+    } catch (err) {
+      if (/** @type {any} */ (err)?.code === 'EEXIST') throw new CliError(`${file} already exists; choose another --out`);
+      throw err;
+    }
+    files.push(file);
+  }
+  const u = normalizeImageUsage(json?.usage, data.length);
+  const c = u && provider ? costOf(provider, model, u, ctx.now()) : { status: 'unknown', nusd: 0 };
+  const cost = { usd: c.nusd / 1e9, status: c.status };
+  if (ctx.json) ctx.printJson({ provider, model, files, usage: json?.usage ?? null, cost });
+  else ctx.print(files.map((f) => `${f}\n`).join(''));
+  footer(ctx, provider, model, { usage: u, cost }, { ttfbMs, totalMs });
+}
+
 /**
  * One smoke request. Router-level failures (wrong password, blocked source, router unreachable
  * or redirecting) abort the whole run; anything else, including a connection that breaks after
@@ -627,6 +676,26 @@ export const COMMANDS = {
     },
     examples: ['mrouter ask "Explain HTTP/2 in one sentence"', 'git diff | mrouter ask -m gemini-2.5-flash "Review this diff:"'],
     run: ask,
+  },
+  image: {
+    summary: 'Generate images with an OpenAI gpt-image model and save them as files',
+    usage: 'image [-m MODEL] [-n N] [--size WxH] [--quality Q] [--format png|jpeg|webp] [-o PREFIX] PROMPT...',
+    synopsis: 'image PROMPT...',
+    description:
+      'Sends POST /v1/images/generations and writes each image to PREFIX-1.jpg, PREFIX-2.jpg, … (the\n' +
+      'extension follows the returned format; existing files are never overwritten). Without --format\n' +
+      'the router returns jpeg at compression 80 and may lower -n to keep the response under 4.5 MB.\n' +
+      `Default model: ${DEFAULT_IMAGE_MODEL}. With --json the file names, usage and cost are printed.`,
+    flags: {
+      model: { type: 'string', short: 'm', value: 'MODEL', help: `gpt-image model (default ${DEFAULT_IMAGE_MODEL})` },
+      n: { type: 'string', short: 'n', value: 'N', help: 'Number of images, 1-10' },
+      size: { type: 'string', value: 'WxH', help: 'Image size, e.g. 1024x1024 (default auto)' },
+      quality: { type: 'string', value: 'Q', help: 'low, medium, high or auto' },
+      format: { type: 'string', value: 'F', help: 'png, jpeg or webp' },
+      out: { type: 'string', short: 'o', value: 'PREFIX', help: 'File name prefix (default image)' },
+    },
+    examples: ['mrouter image "a lighthouse at dusk"', 'mrouter image -m gpt-image-2 -n 2 --size 1536x1024 -o dusk "a lighthouse at dusk"'],
+    run: image,
   },
   test: {
     summary: 'One non-streaming and one streaming request per provider',
