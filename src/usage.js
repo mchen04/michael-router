@@ -1,6 +1,6 @@
 // Usage recording and aggregation (DESIGN §7). The row format is the contract: one counter per
 //   (UTC day, provider, model, metric) in usage_daily, added to atomically, kept 400 days.
-// Besides BASE_METRICS, recording writes `cache_write_tokens` and `usage_missing`; aggregation
+// Besides BASE_METRICS, recording writes `cache_write_tokens`, `images` and `usage_missing`; aggregation
 // sums any well-formed metric, so both appear in /control/usage rows when non-zero.
 import { GatewayError } from './http.js';
 import { costOf } from './pricing.js';
@@ -145,6 +145,28 @@ export function normalizeUsage(u) {
 }
 
 /**
+ * OpenAI Images API `usage` -> normalized usage: output is image tokens plus any text tokens,
+ * input is text plus any image tokens, each priced at its own rate.
+ * @param {unknown} u
+ * @param {number} images the number of images returned
+ * @returns {import('./pricing.js').Usage | null}
+ */
+export function normalizeImageUsage(u, images) {
+  if (!u || typeof u !== 'object' || Array.isArray(u)) return null;
+  const o = /** @type {Record<string, any>} */ (u);
+  return {
+    prompt_tokens: count(o.input_tokens),
+    completion_tokens: count(o.output_tokens),
+    cached_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    image_input_tokens: count(o.input_tokens_details?.image_tokens),
+    text_output_tokens: count(o.output_tokens_details?.text_tokens),
+    images: count(images),
+  };
+}
+
+/**
  * The usage counters of one forwarded request (non-zero metrics only).
  *   usage known and final -> tokens + cost (exact | estimated | unknown);
  *   usage partial (stream cut short) -> tokens, cost unknown;
@@ -164,6 +186,7 @@ export function usageEntries({ provider, model, nowMs, error, billable, usage, u
     m.cached_tokens = usage.cached_tokens;
     m.cache_write_tokens = usage.cache_write_tokens;
     m.reasoning_tokens = usage.reasoning_tokens;
+    m.images = usage.images ?? 0;
     const cost = usageFinal ? costOf(provider, model, usage, nowMs) : { status: 'unknown', nusd: 0 };
     m.cost_nusd = cost.nusd;
     m[`cost_${cost.status}`] = 1;

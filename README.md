@@ -2,7 +2,8 @@
 
 Michael Router is a gateway with separate user and owner passwords that speaks the OpenAI Chat Completions API and
 forwards each request to Claude (Anthropic Messages API), Gemini, OpenRouter or OpenAI, chosen by the
-request's `model` name. It runs as one Vercel function, keeps its state (stored key overrides,
+request's `model` name. `POST /v1/images/generations` forwards OpenAI Images API requests for
+`gpt-image-*` models. It runs as one Vercel function, keeps its state (stored key overrides,
 usage counters, the wrong-password limiter and recent errors) in a PostgreSQL database (schema
 `michael_router`), records usage and cost per provider and model, and comes with a command-line
 owner-only client, `mrouter`.
@@ -26,6 +27,10 @@ The first matching rule wins:
 OpenRouter accepts only names ending in `:free` and `openrouter/free`.
 Paid models, model fallbacks, routing overrides, presets and plugins return 400 before any upstream call.
 The router also sets a zero-price provider guard.
+
+Image generation accepts only models starting with `gpt-image-`; others return 400 `model_not_routable`.
+Vercel caps responses at 4.5 MB, so without `output_format` the router asks for jpeg at compression 80 and caps `n`.
+See `docs/API.md` §3.3.
 
 Each provider supports an optional fallback environment key ending in `_API_KEY_2`.
 The router retries billing or exhausted-credit errors once, before sending any response bytes.

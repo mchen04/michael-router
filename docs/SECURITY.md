@@ -504,6 +504,7 @@ The audit uses local fake providers and invented keys only.
 | Route | Missing password | Wrong password | Repeated wrong password |
 | --- | --- | --- | --- |
 | `POST /v1/chat/completions` | 401 | 401 | 429 |
+| `POST /v1/images/generations` | 401 | 401 | 429 |
 | `GET /v1/models` | 401 | 401 | 429 |
 | `GET /control/health` | 401 | 401 | 429 |
 | `GET /control/keys` | 401 | 401 | 429 |

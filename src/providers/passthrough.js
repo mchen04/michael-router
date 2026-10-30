@@ -7,6 +7,11 @@ import { normalizeUsage } from '../usage.js';
 
 /** Gemini answers 400 (not 401) when the API key itself is invalid or expired. */
 const GEMINI_KEY_INVALID = /API key not valid|API key expired|API_KEY_INVALID/i;
+const IMAGE_BUDGET_BYTES = 3_000_000;
+const PNG_BYTES_PER_PIXEL = 3;
+const COMPRESSED_BYTES_PER_PIXEL = 0.5;
+const AUTO_IMAGE_PIXELS = 1536 * 1024;
+const DEFAULT_IMAGE_COMPRESSION = 80;
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -58,6 +63,35 @@ function prepareChat(body, bytes) {
   return { payload, stream: true, stripUsageOnly: !asked };
 }
 
+/**
+ * An Images API body whose base64 response stays under Vercel's 4.5 MB limit: jpeg (webp with a
+ * transparent background) at compression 80 unless the client chose a format, and `n` capped by
+ * an estimated image size. `adjusted` names each changed field with its new value.
+ * @param {Record<string, any>} body
+ * @returns {{payload: string, adjusted: string[]}}
+ */
+function prepareImages(body) {
+  const request = { ...body };
+  const adjusted = [];
+  if (!Object.hasOwn(request, 'output_format')) {
+    request.output_format = request.background === 'transparent' ? 'webp' : 'jpeg';
+    adjusted.push(`output_format=${request.output_format}`);
+    if (!Object.hasOwn(request, 'output_compression')) {
+      request.output_compression = DEFAULT_IMAGE_COMPRESSION;
+      adjusted.push(`output_compression=${DEFAULT_IMAGE_COMPRESSION}`);
+    }
+  }
+  const size = /^(\d{1,5})x(\d{1,5})$/.exec(String(request.size ?? ''));
+  const pixels = size ? Number(size[1]) * Number(size[2]) : AUTO_IMAGE_PIXELS;
+  const perPixel = ['jpeg', 'webp'].includes(request.output_format) ? COMPRESSED_BYTES_PER_PIXEL : PNG_BYTES_PER_PIXEL;
+  const maxImages = Math.max(1, Math.floor(IMAGE_BUDGET_BYTES / (pixels * perPixel)));
+  if (Number.isInteger(request.n) && request.n > maxImages) {
+    request.n = maxImages;
+    adjusted.push(`n=${maxImages}`);
+  }
+  return { payload: JSON.stringify(request), adjusted };
+}
+
 function defaultEffort(body, native = false) {
   return native || Object.hasOwn(body, 'reasoning_effort') ? body : { ...body, reasoning_effort: 'medium' };
 }
@@ -92,6 +126,8 @@ export const openai = {
     return prepareChat(request, request === body ? bytes : JSON.stringify(request));
   },
   usage: normalizeUsage,
+  imagesPath: '/v1/images/generations',
+  prepareImages,
 };
 
 /** @type {PassthroughProvider} */

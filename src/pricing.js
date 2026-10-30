@@ -6,12 +6,14 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 /**
- * @typedef {{input: number | null, output: number | null, cache_read: number | null, cache_write: number | null}} Prices
+ * @typedef {{input: number | null, output: number | null, cache_read: number | null, cache_write: number | null,
+ *   image_input?: number | null, text_output?: number | null}} Prices
  * @typedef {Prices & {provider: string, priced?: boolean, assumed?: string[], valid_until?: string,
  *   tiers?: (Prices & {above_prompt_tokens: number})[], context_length: number | null, max_output: number | null,
  *   sampling?: boolean, reasoning_effort?: boolean}} PriceEntry
  * @typedef {{prompt_tokens: number, completion_tokens: number, cached_tokens: number, cache_write_tokens: number,
- *   reasoning_tokens: number, cost?: number}} Usage normalized usage; prompt_tokens includes cached and cache-write tokens
+ *   reasoning_tokens: number, image_input_tokens?: number, text_output_tokens?: number, images?: number, cost?: number}} Usage
+ *   normalized usage; prompt_tokens includes cached, cache-write and image input tokens, completion_tokens includes text output tokens
  */
 
 /** @type {{updated: string, sources: Record<string, string>, smoke_models: Record<string, string>, models: Record<string, PriceEntry>}} */
@@ -67,13 +69,17 @@ export function costOf(provider, model, usage, nowMs) {
   const entry = priceEntry(provider, model, nowMs);
   if (!entry) return { status: 'unknown', nusd: 0 };
   const prices = pricesFor(entry, usage.prompt_tokens);
-  const uncached = Math.max(usage.prompt_tokens - usage.cached_tokens - usage.cache_write_tokens, 0);
-  /** @type {[number, number | null][]} */
+  const imageInput = usage.image_input_tokens ?? 0;
+  const textOutput = usage.text_output_tokens ?? 0;
+  const uncached = Math.max(usage.prompt_tokens - usage.cached_tokens - usage.cache_write_tokens - imageInput, 0);
+  /** @type {[number, number | null | undefined][]} */
   const parts = [
     [uncached, prices.input],
     [usage.cached_tokens, prices.cache_read],
     [usage.cache_write_tokens, prices.cache_write],
-    [usage.completion_tokens, prices.output],
+    [imageInput, prices.image_input],
+    [Math.max(usage.completion_tokens - textOutput, 0), prices.output],
+    [textOutput, prices.text_output],
   ];
   let nusd = 0;
   for (const [tokens, price] of parts) {

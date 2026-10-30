@@ -19,6 +19,7 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
 | Method and path | Purpose |
 |-----------------|---------|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming and non-streaming |
+| `POST /v1/images/generations` | OpenAI Images API, `gpt-image-*` models only, non-streaming (§3.3) |
 | `GET /v1/models` | Known models of the configured providers |
 | `GET /control/health` | Version, region, instance, store kind, latency and schema version, which providers are configured (below) |
 | `GET /control/keys` | `[{provider, configured, source: "store"\|"env"\|"none", updated_at}]` (never key values) |
@@ -208,6 +209,31 @@ through `anthropic.thinking`, in particular budget-style `{"type": "enabled", "b
 thinking, because the provider expects the earlier turn's thinking block back. Leave thinking
 off for tool loops, or use the Anthropic Messages API directly when you need both.
 
+### 3.3 Image generation
+
+`POST /v1/images/generations` takes the OpenAI Images API body and forwards it to
+`POST {OPENAI_BASE_URL}/v1/images/generations` with the router's OpenAI key.
+It shares authentication, limits, events, redaction, error mapping and the fallback key (§3.1.1) with chat.
+
+- `model` must start with `gpt-image-`, for example `gpt-image-2.5-sunburst`, `gpt-image-2` or
+  `gpt-image-1-mini`. Any other name returns 400 `model_not_routable` before an upstream call.
+- `stream: true` returns 400 `unsupported_parameter`.
+- Vercel caps a function response at 4.5 MB, and images come back as base64. So the router adjusts
+  the body before forwarding:
+  - without `output_format`, it sets `output_format: "jpeg"` (`"webp"` when `background` is
+    `"transparent"`) and, unless the client set one, `output_compression: 80`;
+  - it lowers `n` so the estimated images fit in 3 MB: 0.5 bytes per pixel for jpeg and webp,
+    3 for png, at the requested `size` (`auto` counts as 1536x1024). For jpeg at 1024x1024 that is
+    5 images, at 1536x1024 3, and above that 1. A png request gets 1 image at 1024x1024.
+  - `x-router-adjusted-params` names each change with its value, for example
+    `output_format=jpeg, output_compression=80, n=3`.
+- A response still over 4.5 MB (an explicit png or compression 100, a very large size) returns
+  502 `response_too_large`. The provider has already billed it, so its usage is recorded.
+- The response is the provider's JSON. Known secrets are scrubbed from every value except
+  `data[].b64_json` values written in strict base64, which no key can match.
+- Usage maps `input_tokens` to `prompt_tokens` and `output_tokens` to `completion_tokens`, and counts
+  the images returned in `images` (§5.2).
+
 ## 4. Streaming
 
 With `stream: true` the response is `text/event-stream` with status 200 and events are relayed
@@ -255,8 +281,8 @@ known. The list comes from the gateway's price table, so it is not exhaustive (�
 
 Usage is recorded after each response (or at the end of a stream) per UTC day, provider and model:
 `requests`, `errors`, `prompt_tokens`, `completion_tokens`, `cached_tokens`,
-`cache_write_tokens`, `reasoning_tokens`, `cost_nusd` (nano-USD), and one cost class per
-request:
+`cache_write_tokens`, `reasoning_tokens`, `images` (image generation), `cost_nusd` (nano-USD),
+and one cost class per request:
 
 | Class | Meaning |
 |-------|---------|
@@ -311,6 +337,8 @@ They reveal neither key values nor fingerprints.
 
 OpenAI estimates use Standard token prices, including cached input and long-context tiers above 272,000 prompt tokens.
 Cache writes use the 30-minute rate when reported; other service tiers, regional premiums and 12-hour writes can differ.
+Image models price text input at `input`, image input tokens at `image_input`, image output at `output` and text output at `text_output`.
+A price the table leaves null makes that request's cost unknown.
 The source and fetch date are in `src/pricing.json`.
 
 ## 6. Errors
@@ -334,7 +362,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 400 | `model_not_allowed` | OpenRouter model or request could use paid services | no |
 | 400 | `model_not_routable` | no routing rule matches | no |
 | 400 | `invalid_parameter` | a field has the wrong shape (messages, tools, `max_tokens`, …) | no |
-| 400 | `unsupported_parameter` | Claude: a feature with no faithful translation (§3.2) | no |
+| 400 | `unsupported_parameter` | Claude: a feature with no faithful translation (§3.2); images: `stream: true` (§3.3) | no |
 | 400 | `unsupported_content` | Claude: a content part type it cannot take | no |
 | 400 | `invalid_tool_arguments` | Claude: assistant `tool_calls` arguments are not a JSON object | no |
 | 400 | `invalid_provider`, `invalid_key` | control routes: unknown provider id, malformed key | no |
@@ -360,6 +388,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 429 | `provider_rate_limited` | upstream 429 (the provider's `Retry-After` is passed on) | after `Retry-After` |
 | same as upstream | provider's code or type, else `provider_error` | any other upstream 4xx or 5xx (including 529), or a 2xx error body | 4xx no; 5xx/529 yes, with backoff |
 | 502 | `provider_error` | the provider answered with something unusable (unreadable body, no event stream for a stream) | yes |
+| 502 | `response_too_large` | images: the response would exceed Vercel's 4.5 MB limit; usage is recorded (§3.3) | no: fewer or smaller images, jpeg or webp |
 | 502 | `upstream_unreachable` | connection failed, or the provider redirected | yes, with backoff |
 | 504 | `upstream_timeout` | no complete response within 295 s | maybe: the provider may have done (and billed) the work |
 
@@ -380,9 +409,10 @@ Response headers on protected routes:
 | Header | Value |
 |--------|-------|
 | `x-router-request-id` | the request id (also in the gateway's log line and in events) |
-| `x-router-provider` | the provider a chat request was routed to |
+| `x-router-provider` | the provider a chat or image request was routed to |
 | `x-router-error-source` | `gateway` or `upstream`, on errors |
 | `x-router-dropped-params` | Claude: comma-separated parameters that were dropped (`temperature, top_p`) |
+| `x-router-adjusted-params` | images: the fields the router set or lowered, with their values (§3.3) |
 | `server-timing` | `auth`, `store`, `upstream` (time to the provider's response headers), `gw` (gateway total before the first byte), in ms |
 | `x-router-cold` | `1` on the first request a function instance serves (when that request is authenticated); absent otherwise |
 | `retry-after` | on 429s, and on 401s after a wait was imposed |
@@ -392,7 +422,8 @@ Response headers on protected routes:
 
 | Limit | Value |
 |-------|-------|
-| Chat request body | 4 MiB (Vercel's request limit is 4.5 MB) |
+| Chat and image request body | 4 MiB (Vercel's request limit is 4.5 MB) |
+| Image response body | 4.5 MB; `n` is capped and the format defaults to jpeg (§3.3) |
 | Control request body | 16 KiB |
 | `model` length | 128 characters |
 | Upstream timeout | 295 s (including streaming) |

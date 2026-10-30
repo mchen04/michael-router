@@ -190,6 +190,24 @@ mrouter ask "Explain HTTP/2 in one sentence"
 git diff | mrouter ask -m gemini-2.5-flash "Review this diff:"
 ```
 
+### `image [-m MODEL] [-n N] [--size WxH] [--quality Q] [--format png|jpeg|webp] [-o PREFIX] PROMPT...`
+
+Generates images with `POST /v1/images/generations` and writes each one to `PREFIX-1.jpg`,
+`PREFIX-2.jpg`, and so on. The prefix defaults to `image` in the current directory. The extension
+follows the returned format. The command never overwrites a file: it exits 1 instead.
+
+- The default model is `gpt-image-1-mini`. Only models that start with `gpt-image-` are accepted;
+  any other exits 2 before a request.
+- Without `--format`, the router returns jpeg at compression 80 and can lower `-n` so the
+  response stays under 4.5 MB (API.md §3.3).
+- The file names go to stdout and the usual footer to stderr.
+- `--json` prints the file names, the provider's `usage` and the cost instead.
+
+```sh
+mrouter image "a lighthouse at dusk"
+mrouter image -m gpt-image-2 -n 2 --size 1536x1024 -o dusk "a lighthouse at dusk"
+```
+
 ### `test [claude|gemini|openrouter|openai...] [-m MODEL]`
 
 For each provider, sends one non-streaming and one streaming request: the prompt
