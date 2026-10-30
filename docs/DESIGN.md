@@ -12,7 +12,7 @@ provider API keys:
 |--------------|-------------------------------------|-----------------------------------------------------------------|
 | `claude`     | Claude API (an Anthropic API key — never a Claude subscription) | native Messages API `POST https://api.anthropic.com/v1/messages` via the adapter in §5.5 |
 | `gemini`     | Gemini API (Google AI Studio key)   | pass-through to `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` (`Authorization: Bearer`) |
-| `openai` | OpenAI | pass-through to `https://api.openai.com/v1/chat/completions` (`Authorization: Bearer`) |
+| `openai` | OpenAI | pass-through to `https://api.openai.com/v1/chat/completions`, and `/v1/images/generations` for `gpt-image-*` (`Authorization: Bearer`) |
 | `openrouter` | OpenRouter                          | pass-through to `https://openrouter.ai/api/v1/chat/completions` (`Authorization: Bearer`) |
 
 Why Claude is not a pass-through: Anthropic's own OpenAI-compatibility layer is documented as
@@ -192,6 +192,7 @@ supported clients).
 | Method + path | Purpose |
 |---------------|---------|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming and non-streaming |
+| `POST /v1/images/generations` | OpenAI Images API for `gpt-image-*` models, non-streaming (§5.6) |
 | `GET /v1/models` | OpenAI model list: known models of configured providers from the price table, each with `owned_by` = provider and, when known, `context_length` and `max_output_tokens` (Hermes reads context length from here) |
 | `GET /control/health` | version, commit, region, instance age/cold flag, store kind, latency and schema version, provider configured flags |
 | `GET /control/keys` | `[{provider, configured, source: "store"\|"env"\|"none", updated_at}]` — never values or fingerprints |
@@ -374,6 +375,25 @@ error chunk, no `[DONE]`. Every chunk carries the same `id`, `object: "chat.comp
 Every upstream or gateway error (except plain 401s, which are `auth` events) appends an event
 (§8) that keeps the code and status, not the message the client received.
 
+### 5.6 Image generation (`imageGenerations` in `src/proxy.js`)
+
+- `routeImageModel` accepts only names starting with `gpt-image-` (provider `openai`); others get
+  400 `model_not_routable`, with the same `model_required` and `invalid_model` checks as chat.
+  `stream: true` → 400 `unsupported_parameter`.
+- `openai.prepareImages` keeps the base64 response under Vercel's 4.5 MB limit: without
+  `output_format` it sets jpeg (webp for a transparent background) and, unless set,
+  `output_compression: 80`; it caps `n` at 3 MB ÷ (pixels × bytes per pixel), with 0.5 for
+  jpeg/webp and 3 for png, `auto` sized as 1536x1024, and at least 1. Changes are named in
+  `x-router-adjusted-params`.
+- Forwarded to `{OPENAI_BASE_URL}/v1/images/generations` with the same headers, deadline,
+  fallback-key retry and error mapping as chat (§5.4).
+- The response is re-serialized after scrubbing; `data[].b64_json` values in strict base64 skip the
+  redactor, whose token pattern would otherwise replace them. A result over 4.5 MB → 502
+  `response_too_large`, with usage recorded as an error.
+- Usage: `normalizeImageUsage` maps `input_tokens`/`output_tokens` to prompt/completion tokens,
+  `input_tokens_details.image_tokens` to `image_input_tokens`, `output_tokens_details.text_tokens`
+  to `text_output_tokens`, and the image count to the `images` metric.
+
 ## 6. Provider keys (`src/keys.js`)
 
 Effective key per provider = stored override (`michael_router.provider_keys` row: `provider` =
@@ -391,7 +411,7 @@ Recorded after the response (non-streaming) or at stream end, via `waitUntil`, a
 `addUsage` statement adding `n` to the `usage_daily` row (UTC day, provider, model, metric) for
 metrics `requests`,
 `errors`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `cache_write_tokens`,
-`reasoning_tokens`, `cost_nusd` (integer nano-USD), `cost_exact` (provider-reported count),
+`reasoning_tokens`, `images`, `cost_nusd` (integer nano-USD), `cost_exact` (provider-reported count),
 `cost_estimated`, `cost_unknown`, and `usage_missing` (a billable request that reported no
 usage); only non-zero metrics are written. The same statement deletes days older than 400 days
 (UTC). Concurrent writers never lose an update (`ON CONFLICT DO UPDATE SET value = value + n`)
@@ -400,8 +420,10 @@ and never deadlock (§2); totals beyond 2^53 − 1 are skipped as malformed when
 Cost per request, in priority order:
 1. provider-reported (`usage.cost` from OpenRouter; OpenRouter credits are USD) → `exact`;
 2. price table (USD per 1M tokens: `input`, `output`, `cache_read`, `cache_write`; optional
-   prompt-size `tiers`) with uncached prompt = `prompt_tokens − cached_tokens − cache_write_tokens`
-   → `estimated`;
+   prompt-size `tiers`) with uncached prompt = `prompt_tokens − cached_tokens − cache_write_tokens
+   − image_input_tokens` → `estimated`; image models also price `image_input_tokens` at
+   `image_input` and `text_output_tokens` at `text_output` (taken out of `completion_tokens`,
+   whose rest is image output at `output`);
 3. otherwise `unknown` — tokens still counted, cost not added, request counted in `cost_unknown`.
    This includes a table entry past its `valid_until` date (announced price changes), and a
    response with no usage at all (`usage_missing` counted).
@@ -409,7 +431,7 @@ Cost per request, in priority order:
 Price-table entry fields: `provider`, `input`, `output`, `cache_read`, `cache_write` (USD per
 1M tokens; null = unknown), `assumed` (an array naming the price fields derived from a multiplier
 rather than published, e.g. `["cache_write"]`), `tiers` (prices `above_prompt_tokens`),
-`valid_until`, `context_length`, `max_output`, `sampling` (false = model rejects non-default
+`valid_until`, `context_length`, `max_output`, `image_input` and `text_output` (image models), `sampling` (false = model rejects non-default
 temperature/top_p), and `priced: false` for a model listed without prices (never estimated; for
 example OpenRouter models, whose cost the provider reports). Sources are not per entry: the
 top-level `sources` holds one per provider. Gemini output prices include thinking tokens.
@@ -462,6 +484,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 gateway auth/limit, 4 upstream/provider er
 | `keys set <claude\|gemini\|openrouter\|openai> [--no-verify]` | read key hidden/stdin, `PUT /control/keys/:p` |
 | `keys unset <provider>` | `DELETE /control/keys/:p` |
 | `models` | `/v1/models` |
+| `image [-m MODEL] [-n N] [--size] [--quality] [--format] [-o PREFIX] PROMPT…` | `/v1/images/generations`; writes `PREFIX-i.ext` without overwriting; footer with tokens and cost |
 | `ask [-m MODEL] [-s SYSTEM] [--no-stream] [--max-tokens N] [--show-reasoning] [PROMPT…]` | prompt from args, piped stdin, or both (args, blank line, stdin); streams text to stdout; reasoning text to stderr only with `--show-reasoning`; footer (provider, model, tokens, cost + status, latency) to stderr |
 | `test [provider…] [-m/--model M]` | per configured provider, one non-streaming and one streaming tiny request with a cheap default model; table of ok/latency/tokens/cost; nonzero exit if any fail |
 | `usage [--days N \| --since DATE]` | by-model table + totals, explicit unknown/estimated markers |
