@@ -16,6 +16,9 @@ test('pricing.json: dated, sourced per provider, every entry well-formed; smoke 
     for (const f of /** @type {const} */ (['input', 'output', 'cache_read', 'cache_write'])) {
       assert.ok(e[f] === null || (typeof e[f] === 'number' && e[f] >= 0), `${id}.${f}`);
     }
+    for (const f of /** @type {const} */ (['image_input', 'text_output'])) {
+      assert.ok(e[f] === undefined || e[f] === null || (typeof e[f] === 'number' && e[f] >= 0), `${id}.${f}`);
+    }
     for (const f of e.assumed ?? []) assert.equal(typeof e[/** @type {'input'} */ (f)], 'number', `${id} assumed ${f}`);
     if (e.provider !== 'openai') assert.equal(typeof e.sampling, 'boolean', id);
     if (e.provider === 'claude') assert.equal(e.cache_write, Math.round(e.input * 1.25 * 1e6) / 1e6, `${id} cache_write = 1.25 x input`);

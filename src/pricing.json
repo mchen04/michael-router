@@ -5,7 +5,7 @@
     "claude": "https://platform.claude.com/docs/en/about-claude/pricing (prices as of 2026-10-06)",
     "gemini": "https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-10-21)",
     "openrouter": "provider-reported usage.cost",
-    "openai": "https://developers.openai.com/api/docs/pricing (Standard prices fetched 2026-10-29)"
+    "openai": "https://developers.openai.com/api/docs/pricing (Standard prices, including image generation, fetched 2026-10-29)"
   },
   "defaults": {
     "cache_write_multiplier_claude": 1.25,
@@ -519,6 +519,61 @@
       "output": 4.4,
       "cache_read": 0.275,
       "cache_write": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "gpt-image-2.5-sunburst": {
+      "provider": "openai",
+      "input": 5,
+      "output": 30,
+      "cache_read": 1.25,
+      "cache_write": null,
+      "image_input": 8,
+      "text_output": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "gpt-image-2.5-flare": {
+      "provider": "openai",
+      "input": 5,
+      "output": 30,
+      "cache_read": 1.25,
+      "cache_write": null,
+      "image_input": 8,
+      "text_output": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "gpt-image-2": {
+      "provider": "openai",
+      "input": 5,
+      "output": 30,
+      "cache_read": 1.25,
+      "cache_write": null,
+      "image_input": 8,
+      "text_output": null,
+      "context_length": null,
+      "max_output": null
+    },
+    "gpt-image-1.5": {
+      "provider": "openai",
+      "input": 5,
+      "output": 32,
+      "cache_read": 1.25,
+      "cache_write": null,
+      "image_input": 8,
+      "text_output": 10,
+      "context_length": null,
+      "max_output": null
+    },
+    "gpt-image-1-mini": {
+      "provider": "openai",
+      "input": 2,
+      "output": 8,
+      "cache_read": 0.2,
+      "cache_write": null,
+      "image_input": 2.5,
+      "text_output": null,
       "context_length": null,
       "max_output": null
     }

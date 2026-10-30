@@ -23,7 +23,7 @@ import { GatewayError, errorEnvelope, jsonResponse, serverTimingHeader } from '.
 import { createKeyResolver } from './keys.js';
 import { createLimiter } from './limiter.js';
 import { createLogger } from './log.js';
-import { UPSTREAM_TIMEOUT_MS, chatCompletions, listModels, verifyProviderKey as defaultVerifyProviderKey } from './proxy.js';
+import { UPSTREAM_TIMEOUT_MS, chatCompletions, imageGenerations, listModels, verifyProviderKey as defaultVerifyProviderKey } from './proxy.js';
 import { createRedactor } from './redact.js';
 import { resolveSource } from './source.js';
 import { STORE_METHODS, StoreError, createStore, failClosed } from './store/index.js';
@@ -31,6 +31,7 @@ import { STORE_METHODS, StoreError, createStore, failClosed } from './store/inde
 /** @type {{method: string, path: string, handler: (ctx: any) => Response | Promise<Response>}[]} */
 export const ROUTES = [
   { method: 'POST', path: '/v1/chat/completions', handler: chatCompletions },
+  { method: 'POST', path: '/v1/images/generations', handler: imageGenerations },
   { method: 'GET', path: '/v1/models', handler: listModels },
   { method: 'GET', path: '/control/health', handler: control.health },
   { method: 'GET', path: '/control/keys', handler: control.listKeys },

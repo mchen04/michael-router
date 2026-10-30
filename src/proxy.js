@@ -1,5 +1,5 @@
-// POST /v1/chat/completions (forwarding, streaming tap, error mapping), GET /v1/models and
-// provider key verification (DESIGN §5.3-§5.5, §6, §7).
+// POST /v1/chat/completions (forwarding, streaming tap, error mapping), POST /v1/images/generations,
+// GET /v1/models and provider key verification (DESIGN §5.3-§5.6, §6, §7).
 //
 // Nothing from the client request is forwarded except the body: upstream requests carry only
 // content-type, the provider auth header and user-agent. Every credentialed fetch uses
@@ -12,18 +12,20 @@ import { modelList } from './pricing.js';
 import * as claude from './providers/claude.js';
 import { bodyError, createRelay, gemini, openrouter, openai } from './providers/passthrough.js';
 import { scrubJson } from './redact.js';
-import { routeModel } from './routing.js';
+import { routeImageModel, routeModel } from './routing.js';
 import { DONE, createSSEParser, serializeJson } from './sse.js';
-import { recordUsage } from './usage.js';
+import { normalizeImageUsage, recordUsage } from './usage.js';
 import { VERSION } from './version.js';
 
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const UPSTREAM_TIMEOUT_MS = 295_000;
 export const VERIFY_TIMEOUT_MS = 10_000;
+export const MAX_RESPONSE_BYTES = 4_500_000;
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
 const MESSAGE_MAX = 1000;
 const USER_AGENT = `michael-router/${VERSION}`;
 const UPSTREAM_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const RETRY_AFTER = /^(\d{1,9}|[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT)$/;
 const PASSTHROUGH = { gemini, openrouter, openai };
 
@@ -128,12 +130,8 @@ function prepare(ctx, { provider, model }, json, bytes) {
   return { url: baseUrl + p.chatPath, payload: r.payload, stream: r.stream, dropped: [], includeUsage: false, stripUsageOnly: r.stripUsageOnly };
 }
 
-/** POST /v1/chat/completions @param {any} ctx @returns {Promise<Response>} */
-export async function chatCompletions(ctx) {
-  const { bytes, json } = await readBody(ctx.request, MAX_BODY_BYTES);
-  const { provider, model } = routeModel(json.model);
-  ctx.log.provider = provider;
-  ctx.log.model = model;
+/** @param {any} ctx @param {'claude' | 'gemini' | 'openrouter' | 'openai'} provider */
+function requireKey(ctx, provider) {
   if (!ctx.keys[provider].configured) {
     throw new GatewayError(
       503,
@@ -141,6 +139,15 @@ export async function chatCompletions(ctx) {
       `Provider "${provider}" has no API key: set ${PROVIDERS[provider].keyEnv} on the server or store one with "mrouter keys set ${provider}".`,
     );
   }
+}
+
+/** POST /v1/chat/completions @param {any} ctx @returns {Promise<Response>} */
+export async function chatCompletions(ctx) {
+  const { bytes, json } = await readBody(ctx.request, MAX_BODY_BYTES);
+  const { provider, model } = routeModel(json.model);
+  ctx.log.provider = provider;
+  ctx.log.model = model;
+  requireKey(ctx, provider);
   /** @type {Target} */
   const target = { provider, model, headers: { 'x-router-provider': provider } };
   const up = prepare(ctx, target, json, bytes);
@@ -217,6 +224,91 @@ export async function chatCompletions(ctx) {
   const usage = PASSTHROUGH[provider].usage(isObject(body) ? body.usage : null);
   recordUsage(ctx, { provider, model, error: false, billable: true, usage, usageFinal: usage !== null });
   return new Response(scrubJson(new TextDecoder().decode(raw), ctx.redact), { status: res.status, headers: { 'content-type': ctx.redact(res.headers.get('content-type') ?? 'application/json'), ...target.headers } });
+}
+
+/**
+ * Scrub an Images API response, passing `b64_json` values through unscrubbed when they are strict
+ * base64 (the redactor would replace them as token-like runs; no key fits that alphabet).
+ * @param {Record<string, any>} body @param {(text: unknown) => string} redact
+ */
+function scrubImages(body, redact) {
+  const images = body.data.map((/** @type {any} */ d) => (isObject(d) && typeof d.b64_json === 'string' && BASE64.test(d.b64_json) ? d.b64_json : null));
+  const rest = { ...body, data: body.data.map((/** @type {any} */ d, /** @type {number} */ i) => (images[i] === null ? d : { ...d, b64_json: '' })) };
+  const safe = JSON.parse(scrubJson(JSON.stringify(rest), redact));
+  images.forEach((b64, i) => {
+    if (b64 !== null) safe.data[i].b64_json = b64;
+  });
+  return JSON.stringify(safe);
+}
+
+/** POST /v1/images/generations (OpenAI gpt-image-* models only) @param {any} ctx @returns {Promise<Response>} */
+export async function imageGenerations(ctx) {
+  const { json } = await readBody(ctx.request, MAX_BODY_BYTES);
+  const { provider, model } = routeImageModel(json.model);
+  ctx.log.provider = provider;
+  ctx.log.model = model;
+  requireKey(ctx, provider);
+  if (json.stream === true) throw new GatewayError(400, 'unsupported_parameter', 'Streaming image generation is not supported: omit "stream".');
+  /** @type {Target} */
+  const target = { provider, model, headers: { 'x-router-provider': provider } };
+  const up = openai.prepareImages(json);
+  if (up.adjusted.length) target.headers['x-router-adjusted-params'] = up.adjusted.join(', ');
+
+  const timeoutMs = ctx.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
+  const deadline = upstreamDeadline(ctx.request.signal, timeoutMs);
+  const started = performance.now();
+  let res;
+  let raw;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    ctx.keySlot = attempt + 1;
+    const key = attempt === 0 ? ctx.keys[provider].key : ctx.config.providers[provider].fallbackKey;
+    try {
+      res = await fetch(ctx.config.providers[provider].baseUrl + openai.imagesPath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'user-agent': USER_AGENT, ...openai.authHeaders(key) },
+        body: up.payload,
+        signal: deadline.signal,
+        redirect: 'error',
+      });
+    } catch (err) {
+      deadline.clear();
+      return failure(ctx, target, err, deadline, timeoutMs);
+    } finally {
+      ctx.timings.upstream = performance.now() - started;
+      ctx.log.upstream_ms = round1(ctx.timings.upstream);
+    }
+    if (!res.ok) {
+      const text = await readText(res, ERROR_BODY_MAX_BYTES).catch(() => '');
+      const info = parseUpstreamError(text);
+      if (attempt === 0 && ctx.config.providers[provider].fallbackKey && retryableBilling(res.status, info) && !deadline.signal.aborted) continue;
+      deadline.clear();
+      return httpError(ctx, target, res.status, info, res.headers.get('retry-after'));
+    }
+    try {
+      raw = await res.text();
+    } catch (err) {
+      deadline.clear();
+      return failure(ctx, target, err, deadline, timeoutMs);
+    }
+    break;
+  }
+  deadline.clear();
+  const body = parseJson(raw);
+  if (!isObject(body) || !Array.isArray(body.data)) {
+    return upstreamError(ctx, target, { status: 502, code: 'provider_error', message: 'Unreadable response from the OpenAI Images API.', upstreamStatus: res.status, billable: true });
+  }
+  const usage = normalizeImageUsage(body.usage, body.data.length);
+  const out = scrubImages(body, ctx.redact);
+  const tooLarge = Buffer.byteLength(out) > MAX_RESPONSE_BYTES;
+  recordUsage(ctx, { provider, model, error: tooLarge, billable: true, usage, usageFinal: usage !== null });
+  if (tooLarge) {
+    throw new GatewayError(
+      502,
+      'response_too_large',
+      `The generated images exceed the ${MAX_RESPONSE_BYTES / 1e6} MB response limit: request fewer images, a smaller size, or output_format "jpeg" or "webp" with a lower output_compression.`,
+    );
+  }
+  return new Response(out, { status: res.status, headers: { 'content-type': 'application/json; charset=utf-8', ...target.headers } });
 }
 
 /**
