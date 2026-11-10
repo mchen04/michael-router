@@ -1,11 +1,33 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PRICING, SMOKE_MODELS, costOf, modelList, priceEntry } from '../../src/pricing.js';
+import { buildRequest, defaultMaxTokens } from '../../src/providers/claude.js';
 import { normalizeUsage, recordUsage, usageEntries } from '../../src/usage.js';
 
 const NOW = Date.parse('2026-10-21T12:00:00Z');
 /** @param {Partial<import('../../src/pricing.js').Usage>} u */
 const usage = (u) => ({ prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, ...u });
+
+test('Claude Fable 5.2 uses its request limits, sampling rules, price and model metadata', () => {
+  const model = 'claude-fable-5-2';
+  assert.equal(defaultMaxTokens(model), 32000);
+  const { body, dropped } = buildRequest({ model, messages: [{ role: 'user', content: 'hi' }], temperature: 0.2, top_p: 0.9 }, { model, cache: true });
+  assert.ok(!('temperature' in body));
+  assert.ok(!('top_p' in body));
+  assert.deepEqual(dropped, ['temperature', 'top_p']);
+  assert.deepEqual(costOf('claude', model, usage({ prompt_tokens: 1000, cached_tokens: 100, cache_write_tokens: 50, completion_tokens: 200 }), NOW), {
+    status: 'estimated',
+    nusd: 850 * 8000 + 100 * 200 + 50 * 10000 + 200 * 40000,
+  });
+  assert.deepEqual(modelList((provider) => provider === 'claude').find((entry) => entry.id === model), {
+    id: model,
+    object: 'model',
+    created: 0,
+    owned_by: 'claude',
+    context_length: 1000000,
+    max_output_tokens: 128000,
+  });
+});
 
 test('pricing.json: dated, sourced per provider, every entry well-formed; smoke models are listed', () => {
   assert.match(PRICING.updated, /^\d{4}-\d{2}-\d{2}$/);
