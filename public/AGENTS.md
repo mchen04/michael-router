@@ -13,23 +13,22 @@ Do not call the Responses API or native Anthropic Messages API.
 
 Use these recommended defaults:
 
-- Automatic: `automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `morph-dsv41flash` only for availability, rate or quota failure.
-- Morph Ultra: exactly `morph-kimik31` or `morph-dsv41flash`; other `morph-` names are refused.
+- Automatic: `automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `deepseek-v4.1-flash` only for availability, rate or quota failure.
+- Included models: exactly `kimi-k3.1-pro` or `deepseek-v4.1-flash`.
 - Claude: `claude-opus-5-5`. Names start with `claude-`.
 - OpenAI: `gpt-6.1-sol`. Names start with `gpt-`, or use `o3`.
 - Gemini: `gemini-3.5-flash-lite`. Names start with `gemini-`.
 - OpenRouter free: `openrouter/free`. IDs contain `/` and must end in `:free`, except this default.
 
-Morph Ultra entitlement for both allowed IDs is confirmed by the plan, live model list and owner-verified zero-cost calls.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
-Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 
 Read [tested models](https://michael-router.vercel.app/docs/providers.html) before choosing another ID.
 Never use a paid OpenRouter ID.
 
 Effort defaults to medium for Claude, OpenAI, and Gemini.
 Set `"reasoning_effort": "low" | "medium" | "high"` to change it; higher costs more.
-OpenRouter and Morph keep their own defaults.
+OpenRouter and the included models keep their own defaults.
 
 ## Handle replies
 

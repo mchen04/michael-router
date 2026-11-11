@@ -36,3 +36,14 @@ test('missing, malformed and unroutable model names are 400s with distinct codes
   for (const m of ['other-model', 'Claude-haiku-5-5', 'GEMINI-2.5-pro', 'o-series']) rejects(m, 'model_not_routable');
   assert.throws(() => routeModel('other-model'), /contain.*"\/".*"claude-".*"gemini-".*"gpt-"/s, 'the message lists the three rules');
 });
+
+for (const model of ['Morphology-7b', 'morphology-7b', 'MoRpHology-7b']) {
+  test(`unroutable model ${model} is quoted exactly as sent`, () => {
+    assert.throws(() => routeModel(model), (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.code, 'model_not_routable');
+      assert.ok(error.message.startsWith(`Model "${model}" is not routable.`));
+      return true;
+    });
+  });
+}

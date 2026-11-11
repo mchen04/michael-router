@@ -15,6 +15,7 @@ import { deleteAdminCredentials, deleteCredentials, fileMode, passwordShapeOk, w
 import { CliError, EXIT, usageError } from './errors.js';
 import { clean, createClient } from './http.js';
 import { readStdinText } from './prompt.js';
+import { PROVIDER_LABELS, providerId, providerLabel } from './providers.js';
 import { costMarker, costWords, fmtInt, fmtMs, fmtTime, renderPairs, renderTable, terminalSafe } from './output.js';
 
 /** @typedef {import('./main.js').Context} Context */
@@ -44,12 +45,12 @@ function checkPasswordShape(password, where) {
 function providerArg(ctx, secretContext) {
   const [provider, ...extra] = ctx.positionals;
   const verb = ctx.path.join(' ');
-  if (provider === undefined) throw usageError(`${verb} needs a provider: ${PROVIDER_IDS.join(', ')}`);
-  const known = /** @type {readonly string[]} */ (PROVIDER_IDS).includes(provider);
+  if (provider === undefined) throw usageError(`${verb} needs a provider: ${PROVIDER_LABELS.join(', ')}`);
+  const known = providerId(provider);
   if (secretContext && (extra.length || !(known || SAFE_WORD.test(provider)))) throw usageError(KEY_ARGUMENT_REFUSAL);
-  if (!known) throw usageError(`unknown provider${SAFE_WORD.test(provider) ? ` "${provider}"` : ''}; use one of: ${PROVIDER_IDS.join(', ')}`);
+  if (!known) throw usageError(`unknown provider${SAFE_WORD.test(provider) ? ` "${provider}"` : ''}; use one of: ${PROVIDER_LABELS.join(', ')}`);
   if (extra.length) throw usageError(`${verb} takes exactly one provider`);
-  return /** @type {'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph'} */ (provider);
+  return /** @type {'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph'} */ (known);
 }
 
 /** @param {Context} ctx @param {string} message */
@@ -143,7 +144,7 @@ async function health(ctx) {
   const { json: h, totalMs } = await client.get('/control/health');
   if (ctx.json) return ctx.printJson(h);
   const providers = Object.entries(h.providers ?? {})
-    .map(([id, p]) => `${clean(id)} ${/** @type {any} */ (p)?.configured ? 'configured' : ctx.c.yellow('not configured')}`)
+    .map(([id, p]) => `${clean(providerLabel(id))} ${/** @type {any} */ (p)?.configured ? 'configured' : ctx.c.yellow('not configured')}`)
     .join(', ');
   ctx.print(
     renderPairs(
@@ -169,7 +170,7 @@ async function keysList(ctx) {
   const { json } = await client.get('/control/keys');
   if (ctx.json) return ctx.printJson(json);
   const rows = (Array.isArray(json) ? json : []).map((k) => [
-    shown(k.provider),
+    shown(providerLabel(k.provider)),
     k.configured ? 'yes' : { text: 'no', style: ctx.c.yellow },
     shown(k.source),
     k.updated_at ? fmtTime(k.updated_at, ctx.now()) : '-',
@@ -180,21 +181,22 @@ async function keysList(ctx) {
 /** @param {Context} ctx */
 async function keysSet(ctx) {
   const provider = providerArg(ctx, true);
+  const label = providerLabel(provider);
   const verify = !ctx.flags['no-verify'];
   const client = await ctx.client(CONTROL_TIMEOUT_S, true);
-  const key = ctx.secret(await ctx.readSecret(`${provider} API key: `, `${provider} key`));
+  const key = ctx.secret(await ctx.readSecret(`${label} API key: `, `${label} key`));
   const problem = providerKeyProblem(key);
-  if (problem) throw usageError(`invalid ${provider} key: ${problem}; nothing was sent`);
+  if (problem) throw usageError(`invalid ${label} key: ${problem}; nothing was sent`);
   let r;
   try {
     ({ json: r } = await client.request('PUT', `/control/keys/${provider}`, { key, verify }));
   } catch (err) {
-    throw keyNotStored(err, provider);
+    throw keyNotStored(err, label);
   }
   if (ctx.json) return ctx.printJson(r);
-  ctx.print(`Stored the ${provider} key on the router (updated ${fmtTime(r.updated_at, ctx.now())}).\n`);
+  ctx.print(`Stored the ${label} key on the router (updated ${fmtTime(r.updated_at, ctx.now())}).\n`);
   if (!verify) ctx.print('Not verified (--no-verify).\n');
-  else ctx.print(`${ctx.c.green('Verified')}: ${provider} accepted the key (HTTP ${shown(r.upstream_status)}).\n`);
+  else ctx.print(`${ctx.c.green('Verified')}: ${label} accepted the key (HTTP ${shown(r.upstream_status)}).\n`);
 }
 
 /**
@@ -220,11 +222,12 @@ function keyNotStored(err, provider) {
 /** @param {Context} ctx */
 async function keysUnset(ctx) {
   const provider = providerArg(ctx, false);
+  const label = providerLabel(provider);
   const client = await ctx.client(CONTROL_TIMEOUT_S, true);
   const { json: r } = await client.request('DELETE', `/control/keys/${provider}`);
   if (ctx.json) return ctx.printJson(r);
   const now = r.source === 'env' ? 'the environment key' : ctx.c.yellow('no key (the provider is not configured)');
-  ctx.print(`${r.removed ? `Removed the stored ${provider} key.` : `No stored ${provider} key.`} ${provider} now uses ${now}.\n`);
+  ctx.print(`${r.removed ? `Removed the stored ${label} key.` : `No stored ${label} key.`} ${label} now uses ${now}.\n`);
 }
 
 /** @param {Context} ctx */
@@ -268,7 +271,7 @@ async function usage(ctx) {
   };
   /** @param {any} r @param {string} provider @param {string} model */
   const row = (r, provider, model) => [provider, model, fmtInt(r.requests), fmtInt(r.errors), fmtInt(r.prompt_tokens), fmtInt(r.completion_tokens), fmtInt(r.cached_tokens), cost(r)];
-  const rows = rowsIn.map((/** @type {any} */ r) => row(r, shown(r.provider), shown(r.model)));
+  const rows = rowsIn.map((/** @type {any} */ r) => row(r, shown(providerLabel(r.provider)), shown(r.model)));
   rows.push(row(u.totals, 'total', ''));
   const columns = [
     { header: 'PROVIDER' },
@@ -303,7 +306,7 @@ async function errors(ctx) {
     shown(e.kind),
     { text: shown(e.code), style: ctx.c.red },
     shown(e.status),
-    e.provider ? `${clean(e.provider)}${e.model ? `/${clean(e.model)}` : ''}` : shown(e.model),
+    e.provider ? `${clean(providerLabel(e.provider))}${e.model ? `/${clean(e.model)}` : ''}` : shown(e.model),
     shown(e.source),
     shown(e.message),
   ]);
@@ -324,7 +327,7 @@ function footer(ctx, provider, model, uc, t) {
     ? `${fmtInt(u.prompt_tokens)} prompt (${fmtInt(u.cached_tokens)} cached) / ${fmtInt(u.completion_tokens)} completion`
     : 'not reported';
   const parts = [
-    `provider ${clean(provider)}`,
+    `provider ${clean(providerLabel(provider))}`,
     `model ${clean(model)}${served}`,
     `tokens ${tokens}`,
     `cost ${costWords(uc.cost)}`,
@@ -502,12 +505,12 @@ async function smoke(client, provider, model, stream) {
 
 /** @param {Context} ctx */
 async function test(ctx) {
-  const requested = [...new Set(ctx.positionals)];
-  for (const p of requested) {
-    if (!(/** @type {readonly string[]} */ (PROVIDER_IDS).includes(p))) {
-      throw usageError(`unknown provider${SAFE_WORD.test(p) ? ` "${p}"` : ''}; use any of: ${PROVIDER_IDS.join(', ')}`);
+  for (const p of ctx.positionals) {
+    if (!providerId(p)) {
+      throw usageError(`unknown provider${SAFE_WORD.test(p) ? ` "${p}"` : ''}; use any of: ${PROVIDER_LABELS.join(', ')}`);
     }
   }
+  const requested = [...new Set(ctx.positionals.map(providerId))];
   const modelFlag = typeof ctx.flags.model === 'string' ? ctx.flags.model : undefined;
   let modelProvider;
   if (modelFlag !== undefined) {
@@ -517,7 +520,7 @@ async function test(ctx) {
       throw usageError(`--model: ${/** @type {Error} */ (err).message}`);
     }
     if (requested.length > 1 || (requested.length === 1 && requested[0] !== modelProvider)) {
-      throw usageError(`--model ${modelFlag} routes to ${modelProvider}; give no provider or only that one`);
+      throw usageError(`--model ${modelFlag} routes to ${providerLabel(modelProvider)}; give no provider or only that one`);
     }
   }
   const client = await ctx.client(CHAT_TIMEOUT_S, !modelFlag && !requested.length);
@@ -555,7 +558,7 @@ async function test(ctx) {
     });
   } else {
     const table = rows.map((r) => [
-      r.provider,
+      providerLabel(r.provider),
       r.mode,
       clean(r.model),
       r.ok ? { text: 'ok', style: ctx.c.green } : { text: clean(r.result), style: ctx.c.red },
@@ -577,7 +580,7 @@ async function test(ctx) {
       { header: 'COST' },
     ];
     ctx.print(renderTable(columns, table, ctx.c));
-    for (const r of failed) ctx.print(`${ctx.c.red(`${r.provider} ${r.mode}`)}: ${r.error}\n`);
+    for (const r of failed) ctx.print(`${ctx.c.red(`${providerLabel(r.provider)} ${r.mode}`)}: ${r.error}\n`);
   }
   if (failed.length) throw new CliError(`${failed.length} of ${rows.length} checks failed`, EXIT.UPSTREAM);
   if (!ctx.json) ctx.print(`All ${rows.length} checks passed.\n`);
@@ -634,7 +637,7 @@ export const COMMANDS = {
       list: { summary: 'Provider, configured, source (store/env/none), last update', usage: 'keys list', run: keysList },
       set: {
         summary: 'Store a provider key on the router and verify it',
-        usage: 'keys set <claude|gemini|openrouter|openai|morph> [--no-verify]',
+        usage: `keys set <${PROVIDER_LABELS.join('|')}> [--no-verify]`,
         synopsis: 'keys set <provider>',
         description:
           "Reads the key from a hidden prompt, or from stdin when piped. Keys are never accepted as\n" +
@@ -647,7 +650,7 @@ export const COMMANDS = {
       },
       unset: {
         summary: 'Remove a stored key (the environment key applies again)',
-        usage: 'keys unset <claude|gemini|openrouter|openai|morph>',
+        usage: `keys unset <${PROVIDER_LABELS.join('|')}>`,
         synopsis: 'keys unset <provider>',
         examples: ['mrouter keys unset openrouter'],
         run: keysUnset,
@@ -699,11 +702,11 @@ export const COMMANDS = {
   },
   test: {
     summary: 'One non-streaming and one streaming request per provider',
-    usage: 'test [claude|gemini|openrouter|openai|morph...] [-m MODEL]',
+    usage: `test [${PROVIDER_LABELS.join('|')}...] [-m MODEL]`,
     synopsis: 'test [provider...]',
     description:
       'Without providers, tests every provider the router has a key for, each with its cheap\n' +
-      `default model (${Object.entries(SMOKE_MODELS).map(([p, m]) => `${p}: ${m}`).join(', ')}),\n` +
+      `default model (${Object.entries(SMOKE_MODELS).map(([p, m]) => `${providerLabel(p)}: ${m}`).join(', ')}),\n` +
       `prompt "${SMOKE_PROMPT}" and max_tokens ${SMOKE_MAX_TOKENS}. -m/--model tests that model on the provider it routes\n` +
       'to. Exits 4 if any check fails.',
     flags: { model: { type: 'string', short: 'm', value: 'MODEL', help: 'Model to test instead of the default' } },

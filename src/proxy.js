@@ -49,7 +49,7 @@ function parseJson(text) {
 }
 
 /**
- * @typedef {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph', model: string, headers: Record<string, string>}} Target
+ * @typedef {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph', model: string, upstreamModel?: string, headers: Record<string, string>}} Target
  * @typedef {{message?: string, code?: string, httpCode?: number, reasons?: string[], signals?: string[]}} UpstreamErrorInfo
  */
 
@@ -110,7 +110,7 @@ export function mapUpstreamStatus(provider, status, info = {}) {
  * @param {Record<string, any>} json
  * @param {Uint8Array} bytes
  */
-function prepare(ctx, { provider, model }, json, bytes) {
+function prepare(ctx, { provider, model, upstreamModel }, json, bytes) {
   const baseUrl = ctx.config.providers[provider].baseUrl;
   if (provider === 'claude') {
     const cache = (ctx.request.headers.get('x-router-cache') ?? '').trim().toLowerCase() !== 'off';
@@ -125,6 +125,10 @@ function prepare(ctx, { provider, model }, json, bytes) {
     };
   }
   const p = PASSTHROUGH[provider];
+  if (upstreamModel && upstreamModel !== json.model) {
+    json = { ...json, model: upstreamModel };
+    bytes = new TextEncoder().encode(JSON.stringify(json));
+  }
   const r = p.prepare(json, bytes);
   return { url: baseUrl + p.chatPath, payload: r.payload, stream: r.stream, dropped: [], includeUsage: false, stripUsageOnly: r.stripUsageOnly };
 }
@@ -135,7 +139,7 @@ function requireKey(ctx, provider) {
     throw new GatewayError(
       503,
       'provider_not_configured',
-      `Provider "${provider}" has no API key: set ${PROVIDERS[provider].keyEnv} on the server or store one with "mrouter keys set ${provider}".`,
+      `Provider "${PROVIDERS[provider].label}" has no API key: set ${PROVIDERS[provider].keyEnv} on the server or store one with "mrouter keys set ${PROVIDERS[provider].label}".`,
     );
   }
 }
@@ -144,11 +148,12 @@ function requireKey(ctx, provider) {
 export async function chatCompletions(ctx) {
   const { bytes, json } = await readBody(ctx.request, MAX_BODY_BYTES);
   if (json.model === 'automatic') return automaticCompletion(ctx, json);
-  const { provider, model } = routeModel(json.model);
+  const route = routeModel(json.model);
+  const { provider, model } = route;
   ctx.log.provider = provider;
   ctx.log.model = model;
   requireKey(ctx, provider);
-  const target = { provider, model, headers: { 'x-router-provider': provider, 'x-router-model': model } };
+  const target = { ...route, headers: { 'x-router-provider': provider, 'x-router-model': model } };
   return chatAttempt(ctx, json, bytes, target);
 }
 
@@ -178,7 +183,7 @@ async function automaticCompletion(ctx, json) {
     ctx.log.provider = provider;
     ctx.log.model = model;
     ctx.error = null;
-    const target = { ...step, automatic: true, deadlineAtMs, failure: null, headers: { 'x-router-provider': provider, 'x-router-model': model } };
+    const target = { ...routeModel(model), automatic: true, deadlineAtMs, failure: null, headers: { 'x-router-provider': provider, 'x-router-model': model } };
     const body = { ...json, model };
     const response = await chatAttempt(ctx, body, new TextEncoder().encode(JSON.stringify(body)), target);
     if (!target.failure) {
@@ -197,7 +202,7 @@ async function automaticCompletion(ctx, json) {
   const deadlines = skipped.filter((s) => s.untilMs !== undefined).map((s) => s.untilMs);
   const retryAfter = Math.max(1, Math.ceil(((deadlines.length ? Math.min(...deadlines) : cooldownEnd(null, ctx.now())) - ctx.now()) / 1000));
   return ctx.fail(rateLimited ? 429 : 503, 'all_providers_unavailable',
-    'All automatic steps unavailable: ' + skipped.map((s) => `${s.model} (${s.provider}:${s.reason})`).join(', ') + '.',
+    'All automatic steps unavailable: ' + skipped.map((s) => `${s.model} (${PROVIDERS[s.provider].label}:${s.reason})`).join(', ') + '.',
     { 'retry-after': String(retryAfter), 'x-router-fallback': skipped.map((s) => `${s.provider}:${s.reason}`).join(',') });
 }
 
@@ -271,7 +276,7 @@ async function chatAttempt(ctx, json, bytes, target) {
   }
   deadline.clear();
   if (up.stream) {
-    return upstreamError(ctx, target, { status: 502, code: 'provider_error', message: `${provider} did not return an event stream.`, upstreamStatus: res.status, billable: true });
+    return upstreamError(ctx, target, { status: 502, code: 'provider_error', message: `${PROVIDERS[provider].label} did not return an event stream.`, upstreamStatus: res.status, billable: true });
   }
   if (provider === 'claude') {
     if (!isObject(body) || body.type !== 'message') {
@@ -429,7 +434,7 @@ function httpError(ctx, target, status, info, retryAfter, upstreamStatus = statu
   const upstreamMessage = info.message ?? `HTTP ${upstreamStatus}`;
   const message =
     mapped.code === 'provider_auth_failed'
-      ? `The ${target.provider} API rejected the router's API key for this provider (${upstreamMessage}).`
+      ? `The ${PROVIDERS[target.provider].label} API rejected the router's API key for this provider (${upstreamMessage}).`
       : upstreamMessage;
   return upstreamError(ctx, target, {
     status: mapped.status,
@@ -449,13 +454,13 @@ function failure(ctx, target, err, deadline, timeoutMs) {
   if (ctx.request.signal.aborted) return clientGone(ctx, target);
   target.failure = { reason: classifyFallback({ network: true }), retryAfter: null };
   if (deadline.timedOut) {
-    const message = `${target.provider} did not respond within ${Math.round(timeoutMs / 1000)} s.`;
+    const message = `${PROVIDERS[target.provider].label} did not respond within ${Math.round(timeoutMs / 1000)} s.`;
     return upstreamError(ctx, target, { status: 504, code: 'upstream_timeout', message, billable: true });
   }
   const cause = /** @type {any} */ (err)?.cause;
   const message = /redirect/i.test(String(cause?.message ?? cause ?? ''))
-    ? `${target.provider} answered with a redirect, which the gateway never follows.`
-    : `Could not reach ${target.provider}.`;
+    ? `${PROVIDERS[target.provider].label} answered with a redirect, which the gateway never follows.`
+    : `Could not reach ${PROVIDERS[target.provider].label}.`;
   return upstreamError(ctx, target, { status: 502, code: 'upstream_unreachable', message, billable: false });
 }
 
@@ -529,7 +534,7 @@ async function relayStream(ctx, target, up, res, deadline, timeoutMs) {
     const scrubbed = truncate(ctx.redact(message));
     return { text: serializeJson(errorEnvelope({ message: scrubbed, code, type: 'upstream_error', provider })), code, message: scrubbed };
   };
-  const timeoutChunk = () => errorChunk('upstream_timeout', `${provider} did not finish within ${Math.round(timeoutMs / 1000)} s.`);
+  const timeoutChunk = () => errorChunk('upstream_timeout', `${PROVIDERS[provider].label} did not finish within ${Math.round(timeoutMs / 1000)} s.`);
   // Finish (usage, event, log line, waitUntil) as soon as the client leaves or the timeout fires,
   // even if the runtime never pulls or cancels the body again. A later pull still ends the body.
   function onAbort() {
@@ -579,7 +584,7 @@ async function relayStream(ctx, target, up, res, deadline, timeoutMs) {
             }
             if (done) {
               if (target.automatic && !emitted && !out) target.failure = { reason: classifyFallback({ network: true }), retryAfter: res.headers.get('retry-after') };
-              const e = errorChunk('upstream_stream_incomplete', `The ${provider} stream ended before it completed.`);
+              const e = errorChunk('upstream_stream_incomplete', `The ${PROVIDERS[provider].label} stream ended before it completed.`);
               return end(controller, out + e.text, { kind: 'error', code: e.code, message: e.message });
             }
             if (out) {
@@ -590,7 +595,7 @@ async function relayStream(ctx, target, up, res, deadline, timeoutMs) {
         } catch {
           if (ctx.request.signal.aborted) return end(controller, '', { kind: 'aborted' });
           if (target.automatic && !emitted) target.failure = { reason: classifyFallback({ network: true }), retryAfter: res.headers.get('retry-after') };
-          const e = deadline.timedOut ? timeoutChunk() : errorChunk('upstream_stream_incomplete', `The ${provider} stream broke before it completed.`);
+          const e = deadline.timedOut ? timeoutChunk() : errorChunk('upstream_stream_incomplete', `The ${PROVIDERS[provider].label} stream broke before it completed.`);
           end(controller, e.text, { kind: 'error', code: e.code, message: e.message });
         }
       },

@@ -7,7 +7,7 @@ import { createMemoryStore } from '../../src/store/memory.js';
 const STEPS = [
   ['claude', 'claude-opus-5-5', 'ANTHROPIC_API_KEY'],
   ['openai', 'gpt-6.1-sol', 'OPENAI_API_KEY'],
-  ['morph', 'morph-dsv41flash', 'MORPH_API_KEY'],
+  ['morph', 'deepseek-v4.1-flash', 'MORPH_API_KEY'],
 ];
 const KEYS = Object.fromEntries(STEPS.map(([p, , key]) => [key, `fake-SENTINEL-${p}-key-12345`]));
 const encoder = new TextEncoder();
@@ -113,6 +113,8 @@ for (const [name, status, respond, retryAfter] of [
     const r = await post(h);
     assert.equal(r.status, status);
     assert.equal(r.json.error.code, 'all_providers_unavailable');
+    assert.match(r.json.error.message, /deepseek-v4.1-flash \(included:/);
+    assert.doesNotMatch(r.text, /morph/i);
     assert.equal(r.headers.get('retry-after'), retryAfter);
     for (const [, model] of STEPS) assert.ok(r.json.error.message.includes(model));
     assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6.1-sol', 'morph-dsv41flash']);
@@ -204,7 +206,7 @@ test('automatic finishes the second billing-key retry before selecting another p
   await h.settle();
 });
 
-for (const model of ['morph-kimik31', 'morph-dsv41flash']) {
+for (const [model, upstream] of [['kimi-k3.1-pro', 'morph-kimik31'], ['deepseek-v4.1-flash', 'morph-dsv41flash'], ['morph-kimik31', 'morph-kimik31'], ['morph-dsv41flash', 'morph-dsv41flash']]) {
   test(`explicit ${model} preserves tools and records zero marginal cost`, async (t) => {
     const { h, calls } = await setup(t, (call) => ok(call.provider));
     const tools = [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }];
@@ -214,6 +216,7 @@ for (const model of ['morph-kimik31', 'morph-dsv41flash']) {
     assert.equal(r.headers.get('x-router-provider'), 'morph');
     assert.equal(r.headers.get('x-router-fallback'), null);
     assert.equal(calls.length, 1);
+    assert.equal(calls[0].model, upstream);
     assert.deepEqual(calls[0].body.tools, tools);
     assert.match(calls[0].url, /\/v1\/chat\/completions$/);
     assert.equal(calls[0].headers.authorization, `Bearer ${KEYS.MORPH_API_KEY}`);
@@ -233,6 +236,8 @@ test('explicit models never fall back and Morph variants are refused before any 
     const r = await post(h, { model });
     assert.equal(r.status, 400);
     assert.equal(r.json.error.code, 'model_not_allowed');
+    assert.match(r.json.error.message, /kimi-k3.1-pro.*deepseek-v4.1-flash/);
+    assert.doesNotMatch(r.text, /morph/i);
   }
   assert.equal(calls.length, 4);
   await h.settle();
@@ -241,8 +246,13 @@ test('explicit models never fall back and Morph variants are refused before any 
 test('models exposes both 1,000,000-token Morph contexts and automatic order', async (t) => {
   const { h } = await setup(t, () => { throw new Error('Catalogue must not call upstream'); });
   const r = await h.call('/v1/models', { headers: bearer() });
-  for (const model of ['morph-kimik31', 'morph-dsv41flash']) assert.equal(r.json.data.find((entry) => entry.id === model).context_length, 1_000_000);
-  assert.match(r.json.data.find((entry) => entry.id === 'automatic').description, /claude-opus-5-5 then gpt-6.1-sol then morph-dsv41flash/);
+  for (const model of ['kimi-k3.1-pro', 'deepseek-v4.1-flash']) {
+    const entry = r.json.data.find((entry) => entry.id === model);
+    assert.equal(entry.context_length, 1_000_000);
+    assert.equal(entry.owned_by, 'included');
+  }
+  assert.doesNotMatch(r.text, /morph/i);
+  assert.match(r.json.data.find((entry) => entry.id === 'automatic').description, /claude-opus-5-5 then gpt-6.1-sol then deepseek-v4.1-flash/);
 });
 
 test('a pre-commit stream failure selects the next provider and reports its model in chunks and headers', async (t) => {
@@ -321,10 +331,10 @@ test('a client disconnect before any response never starts another provider', as
 test('automatic reaches Morph in order and streams its concrete model', async (t) => {
   const { h, calls } = await setup(t, (call) => call.provider === 'morph' ? sse([chunk(), '[DONE]']) : error(503));
   const r = await post(h, { stream: true });
-  assert.equal(r.headers.get('x-router-model'), 'morph-dsv41flash');
+  assert.equal(r.headers.get('x-router-model'), 'deepseek-v4.1-flash');
   assert.equal(r.headers.get('x-router-provider'), 'morph');
   assert.equal(r.headers.get('x-router-fallback'), 'claude:unavailable,openai:unavailable');
-  assert.ok(r.text.includes('"model":"morph-dsv41flash"'));
+  assert.ok(r.text.includes('"model":"deepseek-v4.1-flash"'));
   assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6.1-sol', 'morph-dsv41flash']);
   await h.settle();
 });
@@ -391,6 +401,8 @@ test('automatic shares one invocation budget and skips steps with less than one 
     const r = await pending;
     assert.equal(r.status, 503);
     assert.equal(r.json.error.code, 'all_providers_unavailable');
+    assert.match(r.json.error.message, /deepseek-v4.1-flash \(included:/);
+    assert.doesNotMatch(r.text, /morph/i);
     assert.ok(returnedAt <= 285_000);
     assert.deepEqual(calls.map((call) => call.provider), mode === 'remaining' ? ['claude', 'openai'] : ['claude']);
     assert.match(r.headers.get('x-router-fallback'), /deadline_exhausted/);
@@ -402,14 +414,15 @@ test('automatic shares one invocation budget and skips steps with less than one 
 test('multiline JSON stream events carry the concrete model for explicit Morph and automatic', async (t) => {
   const event = JSON.stringify(chunk(), null, 2).split('\n').map((line) => `data: ${line}`).join('\n');
   const { h, calls } = await setup(t, () => new Response(`${event}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } }), { env: { ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' } });
-  for (const model of ['morph-dsv41flash', 'automatic']) {
+  for (const model of ['kimi-k3.1-pro', 'deepseek-v4.1-flash', 'morph-kimik31', 'morph-dsv41flash', 'automatic']) {
     const r = await post(h, { model, stream: true });
     const data = r.text.split('\n\n')[0].split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(6)).join('\n');
-    assert.equal(JSON.parse(data).model, 'morph-dsv41flash');
-    assert.equal(r.headers.get('x-router-model'), 'morph-dsv41flash');
+    const expected = model === 'automatic' ? 'deepseek-v4.1-flash' : model;
+    assert.equal(JSON.parse(data).model, expected);
+    assert.equal(r.headers.get('x-router-model'), expected);
     assert.ok(r.text.includes('[DONE]'));
   }
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 5);
   await h.settle();
 });
 
@@ -420,4 +433,69 @@ test('token-per-minute wording is a rate limit rather than a context-length erro
   assert.equal(r.headers.get('x-router-fallback'), 'claude:rate_limited');
   assert.deepEqual(calls.map((call) => call.provider), ['claude', 'openai']);
   await h.settle();
+});
+
+for (const [model, upstream] of [['kimi-k3.1-pro', 'morph-kimik31'], ['deepseek-v4.1-flash', 'morph-dsv41flash'], ['morph-kimik31', 'morph-kimik31'], ['morph-dsv41flash', 'morph-dsv41flash']]) {
+  test(`${model} echoes its ID in every streamed chunk and preserves tool calls`, async (t) => {
+    const tool = { tool_calls: [{ index: 0, id: 'call_lookup', type: 'function', function: { name: 'lookup', arguments: '{}' } }] };
+    const { h, calls } = await setup(t, () => sse([chunk({ role: 'assistant' }), chunk(tool), chunk({}, 'tool_calls'), '[DONE]']));
+    const r = await post(h, { model, stream: true });
+    assert.equal(r.status, 200);
+    const chunks = r.text.split('\n').filter((line) => line.startsWith('data: {')).map((line) => JSON.parse(line.slice(6)));
+    assert.equal(chunks.length, 3);
+    assert.ok(chunks.every((item) => item.model === model));
+    assert.deepEqual(chunks[1].choices[0].delta, tool);
+    assert.equal(calls[0].model, upstream);
+    assert.equal(calls[0].body.reasoning_effort, undefined);
+    assert.equal(calls[0].body.stream_options.include_usage, true);
+    await h.settle();
+  });
+}
+
+for (const stream of [false, true]) {
+  test(`included upstream errors preserve text and machine-readable provider IDs with stream=${stream}`, async (t) => {
+    const info = { code: 'morph_capacity_error', message: `Morph capacity exceeded for morph-kimik31; see https://api.morphllm.com/docs; key ${KEYS.MORPH_API_KEY}` };
+    const { h } = await setup(t, () => stream ? sse([chunk(), { error: info }]) : error(503, info.code, info.message));
+    const r = await post(h, { model: 'kimi-k3.1-pro', stream });
+    assert.equal(r.status, stream ? 200 : 503);
+    const envelope = stream ? JSON.parse(r.text.split('\n').find((line) => line.startsWith('data: {\"error\":')).slice(6)) : r.json;
+    assert.equal(envelope.error.message, info.message.replace(KEYS.MORPH_API_KEY, '[redacted]'));
+    assert.equal(envelope.error.code, info.code);
+    assert.equal(envelope.error.provider, 'morph');
+    assert.equal(r.headers.get('x-router-provider'), 'morph');
+    assert.doesNotMatch(r.text, /fake-SENTINEL/);
+    await h.settle();
+  });
+}
+
+test('included key and configuration errors use public wording and keep internal health IDs', async () => {
+  const empty = await makeHarness();
+  const missing = await post(empty, { model: 'kimi-k3.1-pro' });
+  assert.equal(missing.status, 503);
+  assert.equal(missing.json.error.code, 'provider_not_configured');
+  assert.match(missing.json.error.message, /included/);
+  assert.equal(missing.json.error.message, 'Provider \"included\" has no API key: set MORPH_API_KEY on the server or store one with \"mrouter keys set included\".');
+  const health = await empty.call('/control/health', { headers: bearer() });
+  assert.deepEqual(health.json.providers.morph, { configured: false });
+  const unknown = await empty.call('/control/keys/unknown', { method: 'DELETE', headers: bearer() });
+  assert.equal(unknown.status, 400);
+  assert.doesNotMatch(unknown.text, /morph/i);
+  await empty.settle();
+  for (const env of [{ MORPH_API_KEY: 'short' }, { MORPH_API_KEY_2: 'short' }, { MORPH_BASE_URL: 'invalid' }]) {
+    const h = await makeHarness({ env });
+    const r = await h.call('/v1/models', { headers: bearer() });
+    assert.equal(r.status, 503);
+    assert.ok(r.json.error.message.includes(Object.keys(env)[0]));
+    await h.settle();
+  }
+  for (const verified of [false, null]) {
+    const h = await makeHarness({ verifyProviderKey: async () => ({ verified, upstream_status: verified === false ? 401 : 503 }) });
+    const r = await h.call('/control/keys/morph', { method: 'PUT', headers: bearer(), body: JSON.stringify({ key: 'fake-SENTINEL-included-key-12345', verify: true }) });
+    assert.equal(r.status, verified === false ? 400 : 502);
+    assert.equal(r.json.error.provider, 'morph');
+    assert.match(r.json.error.message, /included/);
+    assert.doesNotMatch(r.json.error.message, /morph/i);
+    assert.equal(h.store.dump().provider_keys.length, 0);
+    await h.settle();
+  }
 });

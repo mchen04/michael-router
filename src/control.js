@@ -2,7 +2,7 @@
 // (authenticated, effective provider keys resolved). Key verification is ctx.verifyProviderKey
 // (src/proxy.js by default).
 import { performance } from 'node:perf_hooks';
-import { PROVIDER_IDS } from './config.js';
+import { PROVIDER_IDS, PROVIDERS } from './config.js';
 import { EVENT_KINDS, listEvents } from './events.js';
 import { GatewayError, errorEnvelope, jsonResponse, readJsonBody } from './http.js';
 import { encryptProviderKey, isProviderId, publicKeyInfo, validateProviderKey } from './keys.js';
@@ -18,7 +18,7 @@ const round1 = (ms) => Math.round(ms * 10) / 10;
 function providerParam(ctx) {
   const provider = ctx.params.provider;
   if (!isProviderId(provider)) {
-    throw new GatewayError(400, 'invalid_provider', `Unknown provider; use one of: ${PROVIDER_IDS.join(', ')}.`);
+    throw new GatewayError(400, 'invalid_provider', `Unknown provider; use one of: ${PROVIDER_IDS.map((id) => PROVIDERS[id].label).join(', ')}.`);
   }
   return provider;
 }
@@ -69,11 +69,11 @@ export async function setKey(ctx) {
     }
     const status = typeof v.upstream_status === 'number' ? v.upstream_status : undefined;
     if (v.verified === false) {
-      return keyNotStored(ctx, provider, 400, 'key_rejected', `The ${provider} API rejected the key (HTTP ${status}); it was not stored.`, status);
+      return keyNotStored(ctx, provider, 400, 'key_rejected', `The ${PROVIDERS[provider].label} API rejected the key (HTTP ${status}); it was not stored.`, status);
     }
     if (v.verified !== true) {
       const why = status === undefined ? 'the provider could not be reached' : `the provider answered HTTP ${status}`;
-      const message = `The ${provider} key could not be verified (${why}); it was not stored. Retry later, or store it without verification.`;
+      const message = `The ${PROVIDERS[provider].label} key could not be verified (${why}); it was not stored. Retry later, or store it without verification.`;
       return keyNotStored(ctx, provider, 502, 'key_verification_unavailable', message, status);
     }
     verification = { verified: true, upstream_status: status };

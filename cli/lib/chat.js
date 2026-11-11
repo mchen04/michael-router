@@ -7,6 +7,7 @@ import { costOf } from '../../src/pricing.js';
 import { createSSEParser } from '../../src/sse.js';
 import { usageFor } from '../../src/providers/passthrough.js';
 import { clean } from './http.js';
+import { providerLabel } from './providers.js';
 import { CliError, EXIT } from './errors.js';
 
 /**
@@ -147,7 +148,7 @@ export function streamFailure(r, provider) {
   if (r.error) {
     const code = typeof r.error.code === 'string' ? clean(r.error.code) : 'stream_error';
     const message = typeof r.error.message === 'string' ? clean(r.error.message) : 'no message';
-    const who = clean(r.error.provider ?? provider ?? 'provider');
+    const who = clean(providerLabel(r.error.provider ?? provider ?? 'provider'));
     return new CliError(`upstream error from ${who} during the stream (${code}): ${message}`, EXIT.UPSTREAM, { status: 200, code });
   }
   if (!r.done) {

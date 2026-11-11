@@ -2,13 +2,16 @@
 //   contains "/" -> openrouter (model forwarded unchanged), "claude-" -> claude, "gemini-" -> gemini.
 import { GatewayError } from './http.js';
 
-export const MORPH_INCLUDED_MODELS = Object.freeze(['morph-kimik31', 'morph-dsv41flash']);
+export const INCLUDED_MODELS = Object.freeze({
+  'kimi-k3.1-pro': 'morph-kimik31',
+  'deepseek-v4.1-flash': 'morph-dsv41flash',
+});
 
 export const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 
 const RULES =
   'Route by model name: a name containing "/" goes to OpenRouter (e.g. "openrouter/free", "vendor/model:free"), ' +
-  'a name starting with "morph-" to Morph Ultra, "claude-" to Claude, "gemini-" to Gemini, or "gpt-" or o followed by a digit to OpenAI.';
+  '"kimi-k3.1-pro" or "deepseek-v4.1-flash" to the included provider, "claude-" to Claude, "gemini-" to Gemini, or "gpt-" or o followed by a digit to OpenAI.';
 
 /**
  * @param {unknown} model
@@ -26,13 +29,14 @@ function validModel(model) {
 
 /**
  * @param {unknown} name
- * @returns {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph', model: string}}
+ * @returns {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph', model: string, upstreamModel?: string}}
  */
 export function routeModel(name) {
   const model = validModel(name);
+  const included = Object.entries(INCLUDED_MODELS).find(([id, upstream]) => model === id || model === upstream);
+  if (included) return { provider: 'morph', model, upstreamModel: included[1] };
   if (model.startsWith('morph-')) {
-    if (!MORPH_INCLUDED_MODELS.includes(model)) throw new GatewayError(400, 'model_not_allowed', 'Morph accepts only the included Ultra models: ' + MORPH_INCLUDED_MODELS.join(', ') + '.');
-    return { provider: 'morph', model };
+    throw new GatewayError(400, 'model_not_allowed', 'Included models accept only: ' + Object.keys(INCLUDED_MODELS).join(', ') + '.');
   }
   if (model.includes('/')) {
     if (model !== 'openrouter/free' && !model.endsWith(':free')) {
@@ -61,7 +65,7 @@ export function routeImageModel(name) {
 export const AUTOMATIC_CHAIN = Object.freeze([
   Object.freeze({ provider: 'claude', model: 'claude-opus-5-5' }),
   Object.freeze({ provider: 'openai', model: 'gpt-6.1-sol' }),
-  Object.freeze({ provider: 'morph', model: 'morph-dsv41flash' }),
+  Object.freeze({ provider: 'morph', model: 'deepseek-v4.1-flash' }),
 ]);
 
 export function retryableBilling(status, info) {

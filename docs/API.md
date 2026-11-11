@@ -11,7 +11,7 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
   landing page. This is what OpenAI SDKs send for `api_key`. No other scheme is accepted
   (`x-api-key`, Basic and an empty bearer count as no credential).
   `/v1/*` accepts the shared user password or admin password. `/control/*` accepts only the admin password.
-- **Provider keys stay on the server.** Clients never send Anthropic, Gemini, OpenRouter, OpenAI or Morph keys;
+- **Provider keys stay on the server.** Clients never send upstream provider keys;
   the gateway uses the key configured for the provider (a key stored with `mrouter keys set`
   overrides the environment variable).
 - No CORS headers are sent. Foreign `Origin` and `Sec-Fetch-Site: cross-site` requests return 403 after authentication.
@@ -35,7 +35,8 @@ If authentication cannot run, a presented credential receives a generic 503 with
 Unknown paths under `/v1/` and `/control/` answer 404 and wrong methods 405, but only after
 authentication, so the route table cannot be probed without the password.
 
-`GET /control/health` answers 200 with:
+`GET /control/health` answers 200 with these fields, plus a provider-configuration map.
+The operator guide documents its internal provider identifiers.
 
 ```json
 {
@@ -44,8 +45,7 @@ authentication, so the route table cannot be probed without the password.
   "commit": "<short commit or null>",
   "region": "<function region or null>",
   "instance": { "started_at": "<ISO time>", "age_s": 12, "cold": false },
-  "store": { "kind": "postgres", "latency_ms": 3.2, "schema_version": 2 },
-  "providers": { "claude": { "configured": true }, "gemini": { "configured": true }, "openrouter": { "configured": false }, "openai": { "configured": true }, "morph": { "configured": false } }
+  "store": { "kind": "postgres", "latency_ms": 3.2, "schema_version": 2 }
 }
 ```
 
@@ -76,7 +76,7 @@ configured: true, source: "store", updated_at}`.
 | Rule | Provider | Example |
 |------|----------|---------|
 | exactly `automatic` | ordered selection (§2.1) | `automatic` |
-| starts with `morph-` | `morph`, included Ultra allowlist only | `morph-kimik31`, `morph-dsv41flash` |
+| exactly `kimi-k3.1-pro` or `deepseek-v4.1-flash` | `included` | `kimi-k3.1-pro`, `deepseek-v4.1-flash` |
 | contains `/` | `openrouter` (name forwarded unchanged) | `openrouter/free`, `vendor/model:free` |
 | starts with `claude-` | `claude` (Anthropic Messages API, translated) | `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | starts with `gemini-` | `gemini` (Gemini's OpenAI-compatible endpoint) | `gemini-2.5-flash` |
@@ -84,9 +84,8 @@ configured: true, source: "store", updated_at}`.
 | anything else | 400 `model_not_routable` | `unknown-model` |
 
 OpenRouter requires `:free` at the end, or exactly `openrouter/free`; other names return 400 `model_not_allowed`.
-Morph accepts exactly `morph-kimik31` (Kimi K3.1 Pro) and `morph-dsv41flash` (DeepSeek V4.1 Flash).
-Any other name starting with `morph-` returns 400 `model_not_allowed` before an upstream call.
-Except for the Morph and OpenRouter allowlists, model names are not checked against the price list: any name a provider accepts works. `/v1/models`
+The included models are `kimi-k3.1-pro` (Kimi K3.1 Pro) and `deepseek-v4.1-flash` (DeepSeek V4.1 Flash).
+Except for the included and OpenRouter allowlists, model names are not checked against the price list: any name a provider accepts works. `/v1/models`
 lists the models the gateway has metadata and prices for.
 
 ### 2.1 Automatic selection
@@ -95,11 +94,11 @@ lists the models the gateway has metadata and prices for.
 
 1. `claude-opus-5-5` on `claude`.
 2. `gpt-6.1-sol` on `openai`.
-3. `morph-dsv41flash` on `morph`.
+3. `deepseek-v4.1-flash` on `included`.
 
 A provider without a configured primary key or stored override is skipped.
 An active provider cooldown is also skipped. Explicit model requests bypass cooldowns and never
-move to another model, including explicit `morph-kimik31` and `morph-dsv41flash` requests.
+move to another model, including explicit `kimi-k3.1-pro` and `deepseek-v4.1-flash` requests.
 Each automatic step is visited once. The existing second-key billing retry in §3.1.1 runs within
 a step before the chain can move on; it never repeats successful work.
 
@@ -168,7 +167,7 @@ The error message lists all model steps and safe skip reasons without keys or up
 When no cooldown is known, it is 30 seconds. Missing-key skips do not shorten real cooldowns.
 
 ```json
-{"error":{"message":"All automatic steps unavailable: claude-opus-5-5 (claude:rate_limited), gpt-6.1-sol (openai:cooldown), morph-dsv41flash (morph:not_configured).","type":"gateway_error","code":"all_providers_unavailable"}}
+{"error":{"message":"All automatic steps unavailable: claude-opus-5-5 (claude:rate_limited), gpt-6.1-sol (openai:cooldown), deepseek-v4.1-flash (included:not_configured).","type":"gateway_error","code":"all_providers_unavailable"}}
 ```
 
 For example, after setting the usual client environment locally:
@@ -180,8 +179,7 @@ printf 'Authorization: Bearer %s\n' "$OPENAI_API_KEY" |
 ```
 
 Free group access does not make Claude or OpenAI calls free to Michael, the owner.
-Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
-The allowlisted Morph models have zero marginal usage cost under Ultra; subscription cost is separate.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 
 ## 3. Chat completions
 
@@ -217,17 +215,18 @@ What every provider route shares:
   Automatic attempts share the remaining request-wide budget of at most 285 s (§2.1).
 - A client disconnect aborts the upstream request.
 
-### 3.1 OpenAI, Gemini, OpenRouter and Morph
+### 3.1 OpenAI, Gemini, OpenRouter and included models
 
 OpenAI forwards to `POST https://api.openai.com/v1/chat/completions` by default.
 Set `OPENAI_BASE_URL` to override the server origin.
 OpenAI and Gemini preserve request bytes except when adding the default effort, renaming OpenAI token limits, or requesting streaming usage.
 For streams, the router sets `stream_options.include_usage = true` and removes unrequested usage-only chunks.
 
-Morph forwards to `POST https://api.morphllm.com/v1/chat/completions` with Bearer authentication.
-`MORPH_BASE_URL` overrides its origin. Request and response fields pass through, including tools;
-Morph receives no default effort field. Streaming usage is requested and unrequested usage-only
-chunks are removed as for OpenAI.
+Included models use the upstream Chat Completions endpoint with Bearer authentication.
+Request and response fields pass through, including tools, with model IDs translated at the boundary.
+Responses and streamed chunks echo the model ID sent by the caller.
+Included models receive no default effort field. Streaming usage is requested and unrequested usage-only
+chunks are removed as for OpenAI. See the operator guide for environment configuration.
 
 OpenRouter accepts only `:free` names and `openrouter/free`.
 It rejects `models`, `route`, `preset` and `plugins` with 400 `model_not_allowed`.
@@ -248,8 +247,8 @@ A 200 response containing only an error becomes an error response.
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_API_KEY_2` |
 | Gemini | `GEMINI_API_KEY` | `GEMINI_API_KEY_2` |
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY_2` |
-| Morph | `MORPH_API_KEY` | `MORPH_API_KEY_2` |
 
+The included provider supports the same two key slots; its environment names are in `DEPLOY.md`.
 A stored key replaces slot 1. Slot 2 always comes from the fallback environment variable.
 A fallback alone does not configure a provider.
 The router retries once when slot 1 returns HTTP 401, 402, 403 or 429 with clear billing evidence.
@@ -380,7 +379,7 @@ after its error is dropped. Treat a stream without `[DONE]` as failed.
 ]}
 ```
 
-Only providers with a key appear. The two included Morph IDs appear when Morph is configured.
+Only providers with a key appear. The two included model IDs appear when their provider is configured.
 `automatic` appears when any chain provider is configured, with a short description of its order.
 `context_length` and `max_output_tokens` are present when
 known. The list comes from the gateway's price table, so it is not exhaustive (§2).

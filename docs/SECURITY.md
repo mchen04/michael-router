@@ -10,7 +10,7 @@ implementation does and does not protect against.
 
 Assets, in order of value:
 
-1. **Provider API keys** (Anthropic, Gemini, OpenRouter, OpenAI, Morph). They spend the deployment owner's money.
+1. **Provider API keys** (Anthropic, Gemini, OpenRouter, OpenAI and the included provider). They spend the deployment owner's money.
 2. **The user password.** Friends can send chat requests through the configured keys. Only the separate admin password grants control access.
 3. **Usage and event data** (models used, token counts, costs, client IPs of failed logins).
 
@@ -607,14 +607,12 @@ A failed configuration write cannot pair an old owner credential with a new host
 The CLI test checks this failure path.
 
 
-## 13. Morph costs and automatic response boundary
+## 13. Included model costs and automatic response boundary
 
-The Morph allowlist is exactly `morph-kimik31` and `morph-dsv41flash`, centralized in
-`MORPH_INCLUDED_MODELS`. Every other `morph-` name returns 400 before an upstream call,
-including suffixed variants that could bill per token. Ultra entitlement for both IDs is
-confirmed by the plan, live model list and owner-verified zero-cost calls.
-Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
-Zero marginal usage cost for those models excludes the subscription cost.
+The included model table in `src/routing.js` contains `kimi-k3.1-pro` and `deepseek-v4.1-flash`.
+Their legacy aliases, `morph-kimik31` and `morph-dsv41flash`, remain accepted but hidden from the catalog.
+Other legacy variants return 400 before an upstream call, including suffixed variants that could bill per token.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
 
 `automatic` changes providers only for availability, rate or exhausted-quota errors before

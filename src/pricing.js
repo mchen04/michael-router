@@ -2,6 +2,8 @@
 // and sourced). Costs are integer nano-USD. Unknown models, missing prices and entries past their
 // `valid_until` date are never priced (not even as zero).
 import { createRequire } from 'node:module';
+import { PROVIDERS } from './config.js';
+import { INCLUDED_MODELS } from './routing.js';
 
 const require = createRequire(import.meta.url);
 
@@ -27,7 +29,8 @@ export const SMOKE_MODELS = Object.freeze({ ...PRICING.smoke_models });
  * @returns {PriceEntry | null}
  */
 export function modelInfo(provider, model) {
-  const entry = Object.hasOwn(PRICING.models, model) ? PRICING.models[model] : null;
+  const id = Object.entries(INCLUDED_MODELS).find(([, upstream]) => upstream === model)?.[0] ?? model;
+  const entry = Object.hasOwn(PRICING.models, id) ? PRICING.models[id] : null;
   return entry && entry.provider === provider ? entry : null;
 }
 
@@ -99,7 +102,7 @@ export function modelList(configured) {
   for (const [id, entry] of Object.entries(PRICING.models)) {
     if (!configured(entry.provider)) continue;
     /** @type {Record<string, unknown>} */
-    const m = { id, object: 'model', created: 0, owned_by: entry.provider };
+    const m = { id, object: 'model', created: 0, owned_by: PROVIDERS[entry.provider].label };
     if (typeof entry.context_length === 'number') m.context_length = entry.context_length;
     if (typeof entry.max_output === 'number') m.max_output_tokens = entry.max_output;
     data.push(m);

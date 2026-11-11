@@ -6,7 +6,7 @@
     "gemini": "https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-10-21)",
     "openrouter": "provider-reported usage.cost",
     "openai": "https://developers.openai.com/api/docs/pricing (Standard prices, including image generation, fetched 2026-10-29)",
-    "morph": "Morph Ultra entitlement confirmed by the plan, live model list and owner-verified zero-cost calls; unmetered included usage, still subject to Morph rate and capacity limits"
+    "included": "included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits"
   },
   "defaults": {
     "cache_write_multiplier_claude": 1.25,
@@ -17,7 +17,7 @@
     "gemini": "gemini-3.5-flash-lite",
     "openrouter": "openrouter/free",
     "openai": "gpt-6-luna",
-    "morph": "morph-dsv41flash"
+    "morph": "deepseek-v4.1-flash"
   },
   "models": {
     "claude-fable-5-2": {
@@ -592,11 +592,11 @@
       "context_length": null,
       "max_output": null
     },
-    "morph-kimik31": {
+    "kimi-k3.1-pro": {
       "provider": "morph",
       "included": true,
       "unmetered": true,
-      "note": "Zero marginal cost under Morph Ultra; unmetered included usage, still subject to Morph rate and capacity limits. Subscription cost is separate.",
+      "note": "included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits",
       "input": 0,
       "output": 0,
       "cache_read": 0,
@@ -605,11 +605,11 @@
       "max_output": null,
       "sampling": true
     },
-    "morph-dsv41flash": {
+    "deepseek-v4.1-flash": {
       "provider": "morph",
       "included": true,
       "unmetered": true,
-      "note": "Zero marginal cost under Morph Ultra; unmetered included usage, still subject to Morph rate and capacity limits. Subscription cost is separate.",
+      "note": "included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits",
       "input": 0,
       "output": 0,
       "cache_read": 0,
