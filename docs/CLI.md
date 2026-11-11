@@ -122,7 +122,7 @@ when the stored key was last updated. Key values are never shown.
 mrouter keys list
 ```
 
-### `keys set <claude|gemini|openrouter|openai|morph> [--no-verify]`
+### `keys set <claude|gemini|openrouter|openai|included> [--no-verify]`
 
 Reads the key from a hidden prompt, or from stdin when piped. It checks the key's shape locally,
 then sends it to the router. Unless `--no-verify` is given, the router first checks the key
@@ -141,10 +141,10 @@ With `--no-verify` the key is stored as given and the output ends `Not verified 
 ```sh
 mrouter keys set claude
 mrouter keys set gemini < gemini-key-file
-mrouter keys set morph
+mrouter keys set included
 ```
 
-### `keys unset <claude|gemini|openrouter|openai|morph>`
+### `keys unset <claude|gemini|openrouter|openai|included>`
 
 Removes the stored key. The provider then uses its environment key, or has no key at all.
 
@@ -155,7 +155,7 @@ mrouter keys unset openrouter
 ### `models`
 
 Lists the models the router has metadata and prices for, for the configured providers, with
-context length and maximum output. A configured Morph provider adds both included IDs.
+context length and maximum output. Configuring the included provider adds both model IDs.
 `automatic` appears when any provider in its chain is configured.
 
 ```sh
@@ -190,7 +190,7 @@ program with `</dev/null`. The default model is the Gemini smoke model (`smoke_m
 ```sh
 mrouter ask "Explain HTTP/2 in one sentence"
 mrouter ask -m automatic "Explain HTTP/2 in one sentence"
-mrouter ask -m morph-kimik31 "Explain HTTP/2 in one sentence"
+mrouter ask -m kimi-k3.1-pro "Explain HTTP/2 in one sentence"
 git diff | mrouter ask -m gemini-2.5-flash "Review this diff:"
 ```
 
@@ -212,7 +212,7 @@ mrouter image "a lighthouse at dusk"
 mrouter image -m gpt-image-2 -n 2 --size 1536x1024 -o dusk "a lighthouse at dusk"
 ```
 
-### `test [claude|gemini|openrouter|openai|morph...] [-m MODEL]`
+### `test [claude|gemini|openrouter|openai|included...] [-m MODEL]`
 
 For each provider, sends one non-streaming and one streaming request: the prompt
 `Reply with the single word: pong` with `max_tokens` 256, using the provider's cheap smoke model
@@ -373,15 +373,14 @@ Set different server passwords for the user and admin roles.
 The existing `hash-password` command emits a hash valid for either server password variable.
 
 
-## Morph and automatic replies
+## Included models and automatic replies
 
-`mrouter keys set morph` verifies through Morph's token-free `/v1/models` endpoint.
-`mrouter keys unset morph` removes its stored override; `mrouter keys list` reports its status.
-`mrouter test morph` uses `morph-dsv41flash` for its plain and streaming checks.
-Only `morph-kimik31` and `morph-dsv41flash` are allowed; other `morph-` names return
-400 `model_not_allowed` before an upstream call.
+`mrouter keys set included` verifies through the upstream provider's token-free `/v1/models` endpoint.
+`mrouter keys unset included` removes its stored override; `mrouter keys list` reports its status.
+`mrouter test included` uses `deepseek-v4.1-flash` for its plain and streaming checks.
+Use `kimi-k3.1-pro` or `deepseek-v4.1-flash` for the included models.
 
-Use `mrouter ask -m automatic` for Claude Opus 5.5, then GPT-6.1, then Morph DeepSeek.
+Use `mrouter ask -m automatic` for Claude Opus 5.5, then GPT-6.1, then the DeepSeek included model.
 Only an availability, rate or exhausted-quota error can advance the chain, and only before
 the first response byte. Missing keys and active shared cooldowns are skipped.
 Invalid requests, authentication and permission errors, context limits, safety refusals and
@@ -393,6 +392,6 @@ The reply model and router headers identify the provider and model that answered
 The footer computes cost from that concrete model, and usage is recorded under it.
 When every automatic step is unavailable, the CLI prints `all_providers_unavailable` and
 `Retry-After`; no provider retry runs in the CLI.
-Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 The zero marginal usage estimate excludes subscription cost.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.

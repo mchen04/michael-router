@@ -1,7 +1,7 @@
 # Michael Router
 
 Michael Router is a gateway with separate user and owner passwords that speaks the OpenAI Chat Completions API and
-forwards each request to Claude (Anthropic Messages API), Gemini, OpenRouter, OpenAI or Morph, chosen by the
+forwards each request to Claude (Anthropic Messages API), Gemini, OpenRouter, OpenAI or the included provider, chosen by the
 request's `model` name. `POST /v1/images/generations` forwards OpenAI Images API requests for
 `gpt-image-*` models. It runs as one Vercel function, keeps its state (stored key overrides,
 usage counters, the wrong-password limiter and recent errors) in a PostgreSQL database (schema
@@ -18,8 +18,8 @@ The first matching rule wins:
 
 | `model` | Provider |
 |---------|----------|
-| exactly `automatic` | Claude Opus 5.5, then GPT-6.1, then Morph DeepSeek, only on availability, rate or quota failure |
-| starts with `morph-` | Morph Ultra; only `morph-kimik31` and `morph-dsv41flash` are allowed |
+| exactly `automatic` | Claude Opus 5.5, then GPT-6.1, then the DeepSeek included model, only on availability, rate or quota failure |
+| exactly `kimi-k3.1-pro` or `deepseek-v4.1-flash` | Included models |
 | contains `/` (for example `openrouter/free`) | OpenRouter, name forwarded unchanged |
 | starts with `claude-` | Claude, translated to the Anthropic Messages API |
 | starts with `gemini-` | Gemini, through its OpenAI-compatible endpoint |
@@ -30,7 +30,7 @@ OpenRouter accepts only names ending in `:free` and `openrouter/free`.
 Paid models, model fallbacks, routing overrides, presets and plugins return 400 before any upstream call.
 The router also sets a zero-price provider guard.
 
-`automatic` tries `claude-opus-5-5`, `gpt-6.1-sol`, then `morph-dsv41flash` in that order.
+`automatic` tries `claude-opus-5-5`, `gpt-6.1-sol`, then `deepseek-v4.1-flash` in that order.
 It skips missing keys and shared provider cooldowns. Invalid requests, authentication errors,
 context limits, safety refusals and successful replies stop the chain.
 Fallback stops at the first byte written to the client, including streamed tool calls.
@@ -39,10 +39,8 @@ The answering model appears in the body, streaming chunks and `x-router-model`; 
 names its provider and `x-router-fallback` lists skipped automatic steps.
 See [automatic semantics](docs/API.md#21-automatic-selection) for cooldowns and errors.
 
-Morph Ultra provides **unmetered included usage, still subject to Morph rate and capacity limits**.
-The two allowed models have zero marginal usage cost under that subscription; the subscription is separate.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
-Other Morph names return 400 `model_not_allowed` before any upstream call.
 
 Image generation accepts only models starting with `gpt-image-`; others return 400 `model_not_routable`.
 Vercel caps responses at 4.5 MB, so without `output_format` the router asks for jpeg at compression 80 and caps `n`.
@@ -60,7 +58,7 @@ Usage records count requests by key slot without storing keys.
 - PostgreSQL for the store: Neon in production, PostgreSQL 14 or later (the tests run on 18); the
   router refuses protected requests without one, and `scripts/migrate.mjs` creates its schema
   (`docs/DEPLOY.md` step 3)
-- API keys for the providers you use: Anthropic, Gemini, OpenRouter, OpenAI, Morph
+- API keys for the providers you use: Anthropic, Gemini, OpenRouter, OpenAI and the included provider
 
 ## Documentation
 

@@ -6,13 +6,13 @@ import { parsePasswordHash } from './auth.js';
 import { databaseUrlSecrets, parseDatabaseUrl } from './store/database-url.js';
 import { VERSION, shortCommit } from './version.js';
 
-/** Provider ids are exactly these three; no aliases. */
+/** Internal provider IDs and their display labels. */
 export const PROVIDERS = Object.freeze({
-  claude: Object.freeze({ id: 'claude', keyEnv: 'ANTHROPIC_API_KEY', baseUrlEnv: 'ANTHROPIC_BASE_URL', defaultBaseUrl: 'https://api.anthropic.com' }),
-  gemini: Object.freeze({ id: 'gemini', keyEnv: 'GEMINI_API_KEY', baseUrlEnv: 'GEMINI_BASE_URL', defaultBaseUrl: 'https://generativelanguage.googleapis.com' }),
-  openrouter: Object.freeze({ id: 'openrouter', keyEnv: 'OPENROUTER_API_KEY', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultBaseUrl: 'https://openrouter.ai' }),
-  openai: Object.freeze({ id: 'openai', keyEnv: 'OPENAI_API_KEY', baseUrlEnv: 'OPENAI_BASE_URL', defaultBaseUrl: 'https://api.openai.com' }),
-  morph: Object.freeze({ id: 'morph', keyEnv: 'MORPH_API_KEY', baseUrlEnv: 'MORPH_BASE_URL', defaultBaseUrl: 'https://api.morphllm.com' }),
+  claude: Object.freeze({ id: 'claude', label: 'claude', keyEnv: 'ANTHROPIC_API_KEY', baseUrlEnv: 'ANTHROPIC_BASE_URL', defaultBaseUrl: 'https://api.anthropic.com' }),
+  gemini: Object.freeze({ id: 'gemini', label: 'gemini', keyEnv: 'GEMINI_API_KEY', baseUrlEnv: 'GEMINI_BASE_URL', defaultBaseUrl: 'https://generativelanguage.googleapis.com' }),
+  openrouter: Object.freeze({ id: 'openrouter', label: 'openrouter', keyEnv: 'OPENROUTER_API_KEY', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultBaseUrl: 'https://openrouter.ai' }),
+  openai: Object.freeze({ id: 'openai', label: 'openai', keyEnv: 'OPENAI_API_KEY', baseUrlEnv: 'OPENAI_BASE_URL', defaultBaseUrl: 'https://api.openai.com' }),
+  morph: Object.freeze({ id: 'morph', label: 'included', keyEnv: 'MORPH_API_KEY', baseUrlEnv: 'MORPH_BASE_URL', defaultBaseUrl: 'https://api.morphllm.com' }),
 });
 /** @type {readonly ('openai' | 'claude' | 'gemini' | 'openrouter' | 'morph')[]} */
 export const PROVIDER_IDS = Object.freeze(/** @type {any} */ (Object.keys(PROVIDERS)));
@@ -153,7 +153,7 @@ export function loadConfig(env = {}) {
     limiter[field] = ok ? n : def;
   }
 
-  /** @type {Record<string, {id: string, keyEnv: string, envKey: string | null, fallbackKey: string | null, baseUrl: string}>} */
+  /** @type {Record<string, {id: string, label: string, keyEnv: string, envKey: string | null, fallbackKey: string | null, baseUrl: string}>} */
   const providers = {};
   for (const id of PROVIDER_IDS) {
     const p = PROVIDERS[id];
@@ -164,7 +164,7 @@ export function loadConfig(env = {}) {
     const override = read(env, p.baseUrlEnv);
     const baseUrl = override === undefined ? p.defaultBaseUrl : parseOrigin(override, production);
     if (baseUrl === null) problems.push(p.baseUrlEnv);
-    providers[id] = { id, keyEnv: p.keyEnv, envKey, fallbackKey, baseUrl: baseUrl ?? p.defaultBaseUrl };
+    providers[id] = { id, label: p.label, keyEnv: p.keyEnv, envKey, fallbackKey, baseUrl: baseUrl ?? p.defaultBaseUrl };
   }
 
   const trust = read(env, 'TRUST_PROXY_HEADERS');

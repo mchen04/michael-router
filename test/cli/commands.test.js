@@ -111,10 +111,12 @@ test('health: table and JSON; an unreachable router exits 5', async () => {
   assert.match(r.stdout, new RegExp(`^Version +${esc(VERSION)}$`, 'm'));
   assert.match(r.stdout, /^Instance +started \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \(.+\), (cold start|warm)$/m);
   assert.match(r.stdout, /^Store +memory, \d+ ms$/m);
-  assert.match(r.stdout, /^Providers +claude configured, gemini configured, openrouter configured, openai not configured, morph not configured$/m);
+  assert.match(r.stdout, /^Providers +claude configured, gemini configured, openrouter configured, openai not configured, included not configured$/m);
   assert.match(r.stdout, /^Round trip +\d+ ms$/m);
   const json = JSON.parse((await mr(['health', '--json'])).stdout);
   assert.deepEqual([json.status, json.providers.gemini], ['ok', { configured: true }]);
+  assert.deepEqual(json.providers.morph, { configured: false });
+  assert.equal(Object.hasOwn(json.providers, 'included'), false);
   const down = await mr(['health', '--url', 'http://127.0.0.1:1'], { env: { MROUTER_ADMIN_PASSWORD: PASSWORD } });
   assert.equal(down.code, 5);
   assert.match(down.stderr, /^mrouter: cannot reach http:\/\/127\.0\.0\.1:1( \(\w+\))?\n$/);
@@ -139,7 +141,7 @@ test('keys: list, set with verification accepted / rejected / unverifiable (noth
     ['gemini', 'yes', 'env', '-'],
     ['openrouter', 'yes', 'env', '-'],
     ['openai', 'no', 'none', '-'],
-    ['morph', 'no', 'none', '-'],
+    ['included', 'no', 'none', '-'],
   ]);
   const set = await mr(['keys', 'set', 'claude'], { input: 'sk-ant-fake-SENTINEL-cli-claude-0011\n' });
   assert.equal(set.code, 0, set.stderr);
@@ -178,9 +180,9 @@ test('keys set refuses keys given as arguments and malformed keys; provider argu
     [['keys', 'set', 'claude', 'sk-ant-fake-SENTINEL-argv-0015'], refusal],
     [['keys', 'set', 'sk-ant-fake-SENTINEL-argv-0015'], refusal],
     [['keys', 'set', 'claude', '--key=sk-ant-fake-SENTINEL-argv-0015'], "mrouter: unknown flag --key (see 'mrouter keys set --help')\n"],
-    [['keys', 'set', 'anthropic'], 'mrouter: unknown provider "anthropic"; use one of: claude, gemini, openrouter, openai, morph\n'],
-    [['keys', 'unset'], 'mrouter: keys unset needs a provider: claude, gemini, openrouter, openai, morph\n'],
-    [['keys', 'unset', 'sk-ant-fake-SENTINEL-argv-0016'], 'mrouter: unknown provider; use one of: claude, gemini, openrouter, openai, morph\n'],
+    [['keys', 'set', 'anthropic'], 'mrouter: unknown provider "anthropic"; use one of: claude, gemini, openrouter, openai, included\n'],
+    [['keys', 'unset'], 'mrouter: keys unset needs a provider: claude, gemini, openrouter, openai, included\n'],
+    [['keys', 'unset', 'sk-ant-fake-SENTINEL-argv-0016'], 'mrouter: unknown provider; use one of: claude, gemini, openrouter, openai, included\n'],
   ];
   for (const [args, stderr] of /** @type {[string[], string][]} */ (cases)) {
     const r = await mr(args, { input: 'sk-ant-fake-SENTINEL-stdin-0017\n' });
@@ -299,7 +301,7 @@ test('usage errors exit 2 with a one-line hint; help; --version; the bin runs di
     }
   }
   const help = await mr(['keys', 'set', '-h']);
-  assert.ok(help.stdout.startsWith('Usage: mrouter keys set <claude|gemini|openrouter|openai|morph> [--no-verify]\n'));
+  assert.ok(help.stdout.startsWith('Usage: mrouter keys set <claude|gemini|openrouter|openai|included> [--no-verify]\n'));
   assert.equal((await mr(['help', 'keys', 'set'])).stdout, help.stdout);
   assert.equal((await mr(['--version'])).stdout, `mrouter ${VERSION}\n`);
 

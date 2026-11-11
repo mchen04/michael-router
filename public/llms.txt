@@ -1,18 +1,18 @@
 # Michael Router
 
-> One password-protected OpenAI Chat Completions endpoint for Claude, OpenAI, Gemini, Morph Ultra, and free OpenRouter models.
+> One password-protected OpenAI Chat Completions endpoint for Claude, OpenAI, Gemini, included models, and free OpenRouter models.
 
 - [Agent guide](https://michael-router.vercel.app/AGENTS.md): Instructions for coding agents.
 - [Quick start](https://michael-router.vercel.app/): Connection setup and one request per provider.
 - [API guide](https://michael-router.vercel.app/docs/api.html): Authentication, routing, streaming, and errors.
-- [Tested models](https://michael-router.vercel.app/docs/providers.html): Live-tested IDs, including both confirmed Morph Ultra models, and recommended defaults.
+- [Tested models](https://michael-router.vercel.app/docs/providers.html): Live-tested IDs, including the two included models, and recommended defaults.
 
 Recommended defaults: Claude `claude-opus-5-5`; OpenAI `gpt-6.1-sol`; Gemini `gemini-3.5-flash-lite`; OpenRouter `openrouter/free`.
 Effort defaults to medium for Claude, OpenAI, and Gemini.
 Set `"reasoning_effort": "low" | "medium" | "high"` to change it; higher costs more.
-OpenRouter and Morph keep their own defaults.
-Morph accepts exactly `morph-kimik31` and `morph-dsv41flash`; other `morph-` names are refused.
-`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `morph-dsv41flash` only for availability, rate or quota failure.
+OpenRouter and the included models keep their own defaults.
+Included models use exactly `kimi-k3.1-pro` and `deepseek-v4.1-flash`.
+`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `deepseek-v4.1-flash` only for availability, rate or quota failure.
 It skips missing keys and shared provider cooldowns. Explicit models have no fallback and bypass cooldowns.
 Invalid requests, authentication, permission, context limits, safety refusals and successful replies stop the chain.
 Fallback ends at the first client byte, including comments, role chunks and tool calls.
@@ -24,6 +24,5 @@ Wait for `Retry-After`, the soonest known cooldown end, or 30 seconds if none is
 Cooldowns honor valid upstream seconds or HTTP dates in full, with a 1 second minimum.
 Missing or malformed values use 30 seconds. Extreme values are capped only at the largest representable end time.
 Contact the owner to clear a stuck cooldown. Explicit model requests are never blocked by cooldowns.
-Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
-Morph Ultra entitlement for morph-kimik31 and morph-dsv41flash is confirmed by the plan, live model list and owner-verified zero-cost calls.

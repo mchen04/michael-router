@@ -3,6 +3,7 @@
 import { Buffer } from 'node:buffer';
 import { performance } from 'node:perf_hooks';
 import { VERSION } from '../../src/version.js';
+import { providerLabel } from './providers.js';
 import { CliError, EXIT, usageError } from './errors.js';
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -75,7 +76,7 @@ export function responseError(res, text) {
   const message = sentence(e && typeof e.message === 'string' ? clean(e.message) : '');
   const info = { status: res.status, code };
   if (source === 'upstream') {
-    const provider = clean(e?.provider ?? res.headers.get('x-router-provider') ?? 'provider');
+    const provider = clean(providerLabel(e?.provider ?? res.headers.get('x-router-provider') ?? 'provider'));
     const upstreamStatus = Number.isInteger(e?.upstream_status) ? e.upstream_status : undefined;
     const upstream = upstreamStatus !== undefined && upstreamStatus !== res.status ? `, provider answered ${upstreamStatus}` : '';
     return new CliError(`upstream error from ${provider} (HTTP ${res.status}${upstream}, ${code}): ${message}${retry}`, EXIT.UPSTREAM, { ...info, upstreamStatus });

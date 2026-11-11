@@ -550,7 +550,7 @@ The script checks admin access returns 200 and the user password returns 403 on 
 Both passwords are excluded from output and saved evidence.
 
 
-## Morph Ultra and automatic selection
+## Included models and automatic selection
 
 Deploy in this order:
 
@@ -563,15 +563,16 @@ The optional `MORPH_API_KEY_2` is its environment-only second billing key.
 separately from the key-copy manifest. Production requires HTTPS.
 Key verification sends a Bearer-authenticated `GET /v1/models` and spends no tokens.
 
-The confirmed Ultra allowlist is exactly `morph-kimik31` and `morph-dsv41flash`.
-Morph's plan names both models as unmetered, the live model list includes both IDs, and Michael
-confirmed live calls to both cost nothing. `MORPH_INCLUDED_MODELS` in `src/routing.js` enforces
-the allowlist. Every other `morph-` name is rejected before any upstream call.
-Morph Ultra provides unmetered included usage, still subject to Morph rate and capacity limits.
+The public IDs are `kimi-k3.1-pro` and `deepseek-v4.1-flash`.
+The table in `src/routing.js` maps them to upstream IDs `morph-kimik31` and `morph-dsv41flash`.
+Those two legacy aliases remain accepted but are absent from the public catalog.
+Other legacy variants are rejected before any upstream call.
+The internal provider ID remains `morph` for stored records and `providers.morph` in health output.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 The table records zero marginal usage cost for these two IDs and a separate subscription note.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
 
-`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `morph-dsv41flash`.
+`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `deepseek-v4.1-flash`.
 Missing keys and active provider cooldowns are skipped. Only availability, rate and quota
 failures can advance the chain, and only before the first response byte. Requests with tools
 follow the same boundary; the router executes no tools and never replays a streamed tool call.
@@ -579,7 +580,7 @@ The body and `x-router-model` identify the answerer; `x-router-fallback` explain
 See `API.md` §2.1 for the complete contract.
 
 Local handler tests use fake upstreams and invented keys. Separate live verification confirmed
-both Morph models and automatic fallback. Capacity remains subject to Morph limits.
+both included models and automatic fallback. Capacity remains subject to the upstream provider's limits.
 
 An operator can clear a stuck cooldown by deleting the affected provider's row, for example:
 

@@ -349,7 +349,7 @@ test('test -m/--model checks one model on the provider it routes to; bad provide
     ],
   );
   for (const [args, stderr] of [
-    [['test', 'anthropic'], /^mrouter: unknown provider "anthropic"; use any of: claude, gemini, openrouter, openai, morph\n$/],
+    [['test', 'anthropic'], /^mrouter: unknown provider "anthropic"; use any of: claude, gemini, openrouter, openai, included\n$/],
     [['test', 'claude', '--model', 'gemini-2.5-flash'], /^mrouter: --model gemini-2\.5-flash routes to gemini; give no provider or only that one\n$/],
     [['test', '--model', 'other-model'], /^mrouter: --model: Model "other-model" is not routable\./],
   ]) {

@@ -13,7 +13,7 @@ provider API keys:
 | `claude`     | Claude API (an Anthropic API key — never a Claude subscription) | native Messages API `POST https://api.anthropic.com/v1/messages` via the adapter in §5.5 |
 | `gemini`     | Gemini API (Google AI Studio key)   | pass-through to `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` (`Authorization: Bearer`) |
 | `openai` | OpenAI | pass-through to `https://api.openai.com/v1/chat/completions`, and `/v1/images/generations` for `gpt-image-*` (`Authorization: Bearer`) |
-| `morph` | Morph Ultra included models | pass-through to `https://api.morphllm.com/v1/chat/completions` (`Authorization: Bearer`) |
+| `morph` | Included models | pass-through to `https://api.morphllm.com/v1/chat/completions` (`Authorization: Bearer`) |
 | `openrouter` | OpenRouter                          | pass-through to `https://openrouter.ai/api/v1/chat/completions` (`Authorization: Bearer`) |
 
 Why Claude is not a pass-through: Anthropic's own OpenAI-compatibility layer is documented as
@@ -263,7 +263,7 @@ committed row, so each request gets a distinct inflight and failure count.
 `model` must match `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`, else 400 `invalid_model`. First match:
 
 1. exactly `automatic` → the ordered chain in `src/routing.js`, before explicit routing
-2. starts with `morph-` → `morph`; require membership in `MORPH_INCLUDED_MODELS`, otherwise 400 `model_not_allowed`
+2. `kimi-k3.1-pro` or `deepseek-v4.1-flash` → `morph`; translate through the included model table. The two legacy aliases remain accepted; other legacy variants return 400 `model_not_allowed`
 3. contains `/` → `openrouter`; require `:free` suffix or exactly `openrouter/free`, otherwise 400 `model_not_allowed`
 4. starts with `claude-` → `claude`
 5. starts with `gemini-` → `gemini`
@@ -271,8 +271,8 @@ committed row, so each request gets a distinct inflight and failure count.
 7. otherwise → 400 `model_not_routable`
 
 An explicit selected provider without a key returns 503 `provider_not_configured`.
-Automatic selection skips it. The Morph allowlist contains exactly `morph-kimik31` and
-`morph-dsv41flash`; no wildcard can reach a paid Morph model.
+Automatic selection skips it. The legacy aliases are exactly `morph-kimik31` and
+`morph-dsv41flash`; no wildcard can reach a paid model.
 
 ### 5.4 Forwarding (`src/proxy.js`, `src/providers/*`)
 
@@ -664,10 +664,10 @@ A credential matching both roles stays user-only, so passwords must differ.
 The CLI stores its owner password separately and never falls back to the user password for control requests.
 
 
-## Morph and automatic selection
+## Included models and automatic selection
 
 `src/routing.js` owns the ordered chain and the table-driven `classifyFallback` function.
-The steps are `claude-opus-5-5`, `gpt-6.1-sol` and `morph-dsv41flash`, in that order.
+The steps are `claude-opus-5-5`, `gpt-6.1-sol` and `deepseek-v4.1-flash`, in that order.
 `src/proxy.js` uses the same single-provider attempt path for explicit and automatic calls.
 An automatic step is visited once, with the existing optional second-key billing retry inside
 that attempt. A success stops immediately. Failed upstream attempts retain error accounting;
@@ -717,10 +717,12 @@ a rate limit, including active cooldowns created by rate limits. `Retry-After` i
 known cooldown end in whole seconds rounded up, or 30 seconds if none is known.
 The message lists model steps and safe skip reasons. No key or upstream text enters this summary.
 
-Morph uses the OpenAI-compatible passthrough adapter, Bearer auth, `MORPH_API_KEY`, optional
-`MORPH_API_KEY_2` and `MORPH_BASE_URL`. It gets no added reasoning-effort default.
-The confirmed Ultra allowlist is `morph-kimik31` and `morph-dsv41flash`, centralized in `src/routing.js`.
-The catalogue marks its two models as included and unmetered with zero marginal usage cost,
-not an invented per-token rate. Ultra supplies unmetered included usage, still subject to Morph
-rate and capacity limits. Its subscription cost is separate.
+Included models use the OpenAI-compatible passthrough adapter, Bearer auth, `MORPH_API_KEY`, optional
+`MORPH_API_KEY_2` and `MORPH_BASE_URL`. They get no added reasoning-effort default.
+The internal provider ID stays `morph` for stored records and the `providers.morph` health key.
+The table in `src/routing.js` maps `kimi-k3.1-pro` to `morph-kimik31`
+and `deepseek-v4.1-flash` to `morph-dsv41flash`. Legacy aliases remain accepted but hidden from the catalog.
+Responses and streamed chunks echo the caller's model ID. Automatic replies use the public ID.
+The catalog marks the two models as included and unmetered with zero marginal usage cost.
+Included models: zero marginal cost under a separate subscription plan, unmetered, still subject to the upstream provider's rate and capacity limits.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
