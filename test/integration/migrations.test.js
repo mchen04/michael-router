@@ -18,9 +18,8 @@ after(async () => {
   await cluster?.stop();
 });
 
-/** A test-only additive migration 2. */
-const V2 = Object.freeze({
-  version: 2,
+const FUTURE = Object.freeze({
+  version: LATEST_SCHEMA_VERSION + 1,
   name: 'test: event note',
   sql: 'ALTER TABLE michael_router.events ADD COLUMN IF NOT EXISTS note text;\nCREATE INDEX IF NOT EXISTS events_note_idx ON michael_router.events (note);\n',
 });
@@ -80,7 +79,7 @@ test('fresh apply creates the schema at the latest version; a re-apply changes n
     assert.match(plan.serverVersion, /^\d+\.\d+/);
     assert.deepEqual([plan.schemaExists, plan.applied, plan.pending.map((p) => p.version), plan.refusal], [false, [], MIGRATIONS.map((m) => m.version), null]);
     assert.deepEqual((await applyMigrations(c)).applied, MIGRATIONS.map((m) => m.version));
-    assert.deepEqual(await routerTables(c), ['auth_sources', 'events', 'provider_keys', 'schema_migrations', 'usage_daily']);
+    assert.deepEqual(await routerTables(c), ['auth_sources', 'events', 'provider_cooldowns', 'provider_keys', 'schema_migrations', 'usage_daily']);
     assert.deepEqual(await recorded(c), MIGRATIONS.map((m) => ({ version: m.version, name: m.name, checksum: migrationChecksum(m.sql) })));
     const before = await digest(c);
     const again = await applyMigrations(c);
@@ -134,10 +133,35 @@ test('data outside michael_router is never touched, even with a search_path that
   const before = await outside();
   assert.deepEqual((await migrate(url)).applied, MIGRATIONS.map((m) => m.version));
   assert.equal(await outside(), before);
-  await withClient(url, async (c) => assert.deepEqual(await routerTables(c), ['auth_sources', 'events', 'provider_keys', 'schema_migrations', 'usage_daily']));
+  await withClient(url, async (c) => assert.deepEqual(await routerTables(c), ['auth_sources', 'events', 'provider_cooldowns', 'provider_keys', 'schema_migrations', 'usage_daily']));
 });
 
-test('router rows survive a re-apply and an additive migration 2', async () => {
+test('migration 2 adds only cooldown storage and preserves migration 1 data', async () => {
+  const url = await cluster.createDatabase('cooldown_upgrade');
+  await withClient(url, (c) => applyMigrations(c, [MIGRATIONS[0]]));
+  await withClient(url, (c) => c.query(`
+    INSERT INTO michael_router.provider_keys VALUES ('claude', 'kept-record', '2026-10-21T12:00:00Z');
+    INSERT INTO michael_router.events (event) VALUES ('{"kind":"auth","kept":true}');
+    INSERT INTO michael_router.usage_daily VALUES ('2026-10-21', 'claude', 'claude-opus-5-5', 'requests', 3);
+    INSERT INTO michael_router.auth_sources (source, failures) VALUES ('kept-source', 2);
+  `));
+  const before = await dumpRouterTables(url);
+  assert.deepEqual((await migrate(url)).applied, [2]);
+  const after = await dumpRouterTables(url);
+  for (const table of ['auth_sources', 'provider_keys', 'usage_daily', 'events']) assert.deepEqual(after[table], before[table], table);
+  assert.deepEqual(after.provider_cooldowns, []);
+  assert.deepEqual(after.schema_migrations.map((r) => JSON.parse(r).version), [1, 2]);
+  const store = createPostgresStore(storeConfig(url));
+  try {
+    await store.setCooldown('claude', 1000, 'rate_limited');
+    assert.deepEqual(await store.getCooldown('claude', 999), { untilMs: 1000, reason: 'rate_limited' });
+    assert.equal(await store.getCooldown('claude', 1000), null);
+  } finally {
+    await store.close();
+  }
+});
+
+test('router rows survive a re-apply and a future additive migration', async () => {
   const url = await cluster.createDatabase('upgrade');
   await migrate(url);
   const store = createPostgresStore(storeConfig(url));
@@ -151,8 +175,8 @@ test('router rows survive a re-apply and an additive migration 2', async () => {
     await migrate(url);
     assert.deepEqual(await dumpRouterTables(url), before, 'a re-apply keeps every row');
 
-    assert.deepEqual(additiveViolations(V2.sql), []);
-    assert.deepEqual((await withClient(url, (c) => applyMigrations(c, [...MIGRATIONS, V2]))).applied, [2]);
+    assert.deepEqual(additiveViolations(FUTURE.sql), []);
+    assert.deepEqual((await withClient(url, (c) => applyMigrations(c, [...MIGRATIONS, FUTURE]))).applied, [FUTURE.version]);
     const upgraded = await dumpRouterTables(url);
     for (const table of ['auth_sources', 'provider_keys', 'usage_daily']) assert.deepEqual(upgraded[table], before[table], table);
     assert.deepEqual(
@@ -160,8 +184,8 @@ test('router rows survive a re-apply and an additive migration 2', async () => {
       before.events.map((r) => ({ ...JSON.parse(r), note: null })),
       'events gained only the new column',
     );
-    assert.deepEqual(upgraded.schema_migrations.map((r) => JSON.parse(r).version), [1, 2]);
-    assert.deepEqual(await store.ping(), { schemaVersion: 2 }, 'a newer additive schema still serves this router');
+    assert.deepEqual(upgraded.schema_migrations.map((r) => JSON.parse(r).version), [...MIGRATIONS.map((m) => m.version), FUTURE.version]);
+    assert.deepEqual(await store.ping(), { schemaVersion: FUTURE.version }, 'a newer additive schema still serves this router');
     assert.deepEqual(await store.listEvents(200), ['{"kind":"auth","kept":true}']);
   } finally {
     await store.close();
@@ -186,11 +210,11 @@ test('refusals change nothing: objects without schema_migrations, an unknown app
 
   const empty = await cluster.createDatabase('refuse_none');
   await withClient(empty, (c) => c.query('CREATE SCHEMA michael_router'));
-  assert.deepEqual((await migrate(empty)).applied, [1], 'an empty pre-created schema is not a refusal');
+  assert.deepEqual((await migrate(empty)).applied, MIGRATIONS.map((m) => m.version), 'an empty pre-created schema is not a refusal');
 
   const newer = await cluster.createDatabase('refuse_newer');
-  await withClient(newer, (c) => applyMigrations(c, [...MIGRATIONS, V2]));
-  await refused(newer, MIGRATIONS, /records migration 2, which this code does not know/);
+  await withClient(newer, (c) => applyMigrations(c, [...MIGRATIONS, FUTURE]));
+  await refused(newer, MIGRATIONS, new RegExp(`records migration ${FUTURE.version}, which this code does not know`));
 
   const edited = await cluster.createDatabase('refuse_checksum');
   await migrate(edited);
@@ -199,9 +223,9 @@ test('refusals change nothing: objects without schema_migrations, an unknown app
 
 test('concurrent runners: each version is applied exactly once', async () => {
   const url = await cluster.createDatabase('concurrent');
-  const runs = await Promise.all(Array.from({ length: 4 }, () => withClient(url, (c) => applyMigrations(c, [...MIGRATIONS, V2]))));
-  assert.deepEqual(runs.flatMap((r) => r.applied).sort(), [1, 2]);
-  await withClient(url, async (c) => assert.deepEqual((await recorded(c)).map((r) => r.version), [1, 2]));
+  const runs = await Promise.all(Array.from({ length: 4 }, () => withClient(url, (c) => applyMigrations(c, [...MIGRATIONS, FUTURE]))));
+  assert.deepEqual(runs.flatMap((r) => r.applied).sort(), [...MIGRATIONS.map((m) => m.version), FUTURE.version]);
+  await withClient(url, async (c) => assert.deepEqual((await recorded(c)).map((r) => r.version), [...MIGRATIONS.map((m) => m.version), FUTURE.version]));
 });
 
 // Static additive-only check. Allowed statements create in, or comment on, schema michael_router
@@ -255,7 +279,7 @@ test('every migration is additive and confined to michael_router (static check);
   );
   assert.ok(Object.isFrozen(MIGRATIONS) && MIGRATIONS.every((m) => Object.isFrozen(m)));
   for (const ok of [
-    V2.sql,
+    FUTURE.sql,
     'CREATE TABLE IF NOT EXISTS michael_router.t (id integer PRIMARY KEY, parent bigint REFERENCES michael_router.events (id))',
     'CREATE UNIQUE INDEX IF NOT EXISTS t_parent_idx ON michael_router.t (parent)',
     "COMMENT ON COLUMN michael_router.events.note IS 'it''s optional'",

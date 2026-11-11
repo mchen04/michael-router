@@ -238,7 +238,7 @@ test('handler: a missing credential is not counted and makes no store call', asy
   }
   await h.settle();
   assert.equal(calls, 0);
-  assert.deepEqual(raw.dump(), { auth_sources: [], provider_keys: [], usage_daily: [], events: [] });
+  assert.deepEqual(raw.dump(), { auth_sources: [], provider_keys: [], usage_daily: [], events: [], provider_cooldowns: [] });
 });
 
 /** A store whose every method behaves the same way. @param {(...args: any[]) => Promise<any>} behavior */

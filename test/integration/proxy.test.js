@@ -500,7 +500,7 @@ test('GET /v1/models: only configured providers, OpenAI list shape, context_leng
   assert.deepEqual([...new Set(r.json.data.map((/** @type {any} */ m) => m.owned_by))], ['gemini']);
   assert.equal(r.json.data.find((/** @type {any} */ m) => m.id === 'gemini-2.5-flash').context_length, 1048576);
   const all = await (await harness()).call('/v1/models', { headers: bearer() });
-  assert.deepEqual([...new Set(all.json.data.map((/** @type {any} */ m) => m.owned_by))], ['claude', 'gemini', 'openrouter']);
+  assert.deepEqual([...new Set(all.json.data.map((/** @type {any} */ m) => m.owned_by))], ['claude', 'gemini', 'openrouter', 'router']);
   assert.deepEqual(all.json.data.find((/** @type {any} */ m) => m.id === 'claude-haiku-5-5'), {
     id: 'claude-haiku-5-5',
     object: 'model',

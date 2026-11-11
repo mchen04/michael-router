@@ -91,7 +91,7 @@ The plan of a fresh database reads:
 PostgreSQL server major version: <major>
 Schema michael_router: does not exist
 Applied migrations: none
-Pending migrations: 1 (initial schema)
+Pending migrations: 1 (initial schema), 2 (provider cooldowns)
 Refusal: none
 Pending: run again with --apply to apply them.
 ```
@@ -108,6 +108,35 @@ SQLSTATE.
 | 3 | refused, nothing changed: schema `michael_router` holds objects but no migration table; the database records a version this code does not know (it was migrated by newer code: deploy that instead); or a recorded checksum differs | stop and note the `Refusal:` line for the account owner |
 | 2 | usage: a terminal on stdin, no or a repeated variable, or a URL the store refuses (no TLS to a remote host, an unsupported `ssl*` parameter) | fix the input; the message names the variable |
 | 1 | could not connect, or the database refused a statement | `authentication failed (SQLSTATE 28P01)`: wrong or rotated password; `the database does not exist (SQLSTATE 3D000)`; `insufficient privilege (SQLSTATE 42501)`: the role may not create the schema; `a lock was not available in time (SQLSTATE 55P03)`: another migration is running, retry later; after `--apply`, run the plan to see what was applied |
+
+### 3.1.1 Migration 2 and rollback
+
+Migration 2 creates only `michael_router.provider_cooldowns` with `provider` as its primary key,
+`until_ms` as an epoch-millisecond expiry and `reason` as a safe classification label.
+Migration 1 and its checksum remain unchanged. Apply migration 2 before deploying this version
+because `/control/health` requires the latest schema. Then add `MORPH_API_KEY`, then deploy.
+Use the plan and apply sequence above. Give a separate runtime role the table privileges
+described in `SECURITY.md` §10.
+
+Cooldown operations fail open for chat. A cooldown read or write failure cannot make a healthy
+upstream fail, but authentication and other required store operations still fail closed.
+Health requires the latest schema version and reports 2 after this migration.
+
+A code rollback can leave the additive table in place. If the operator also needs to remove
+migration 2, first restore the previous application and stop any new-code requests, then run
+this SQL through the approved database connection:
+
+```sql
+BEGIN;
+DROP TABLE IF EXISTS michael_router.provider_cooldowns;
+DELETE FROM michael_router.schema_migrations WHERE version = 2;
+COMMIT;
+```
+
+This removes only cooldown state and its migration receipt. It preserves keys, usage, limiter
+rows and events. Never edit migration 1 or its recorded checksum. Plan again with the matching
+application version after rollback. These commands are rollback instructions, not an automatic
+part of deployment.
 
 ### 3.2 Transfer the database URL
 
@@ -145,7 +174,7 @@ Check: `vercel env ls production` lists `DATABASE_URL_POOLED`.
 | `ROUTER_PASSWORD_HASH` | `stdin` with `"transform": "scrypt-hash"` | Preferred. The script hashes the password with the server's own function and uploads only the hash. |
 | `ROUTER_PASSWORD` | any source | The simpler alternative: the password itself (at least 12 characters), see `SECURITY.md` §2. |
 | `ROUTER_SECRET` | `generate` with `"onlyIfAbsent": true` | Created once and never overwritten: changing it makes stored key overrides undecryptable and resets source ids. |
-| `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` | the designated sources | A provider without a key answers 503 `provider_not_configured`. Keys can also be set later with `mrouter keys set` (stored encrypted in the database, overriding the variable). |
+| `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `MORPH_API_KEY` | the designated sources | An explicit provider request without a key answers 503 `provider_not_configured`; automatic selection skips it. Keys can also be set later with `mrouter keys set` (stored encrypted in the database, overriding the variable). |
 | `DATABASE_URL_POOLED`, `DATABASE_URL` | `stdin-env` | Step 3.2, with its own manifest. |
 
 Set **exactly one** of `ROUTER_PASSWORD_HASH` and `ROUTER_PASSWORD`: with both, every protected
@@ -313,7 +342,7 @@ so redeploy after changing any of them.
 ```sh
 <password source> | mrouter login --url https://<host>
 mrouter health
-mrouter health --json        # "store": {"kind": "postgres", …, "schema_version": 1}
+mrouter health --json        # "store": {"kind": "postgres", …, "schema_version": 2}
 mrouter keys list
 mrouter test
 mrouter ask -m <model> "Reply with the single word: pong"    # once per provider
@@ -323,7 +352,7 @@ mrouter errors --limit 10
 ```
 
 `mrouter health` must show the store as `postgres`, and `--json` must show `store.kind`
-`postgres`, `store.schema_version` 1 (the version step 3.1 applied) and a `store.latency_ms`.
+`postgres`, `store.schema_version` 2 (the version step 3.1 applied) and a `store.latency_ms`.
 Anything else (for example `memory`, or a 503) means the deployment does not use the migrated
 database: stop.
 
@@ -452,7 +481,7 @@ Set `OPENAI_API_KEY` through the existing key-copy manifest, or run `mrouter key
 OpenAI defaults to `https://api.openai.com`; `OPENAI_BASE_URL` overrides the origin.
 All production upstream origins require HTTPS.
 
-The copy script also accepts `ANTHROPIC_API_KEY_2`, `OPENAI_API_KEY_2`, `GEMINI_API_KEY_2` and `OPENROUTER_API_KEY_2`.
+The copy script also accepts `ANTHROPIC_API_KEY_2`, `OPENAI_API_KEY_2`, `GEMINI_API_KEY_2`, `OPENROUTER_API_KEY_2` and `MORPH_API_KEY_2`.
 Each optional variable supplies that provider's fallback slot.
 Follow the same plan, check and apply steps used for primary keys.
 Fallback keys remain environment-only; redeploy after changing them.
@@ -460,7 +489,9 @@ The API and CLI show no fallback key values.
 
 Fallback occurs once for explicit billing or exhausted-credit errors on HTTP 401, 402, 403 or 429.
 Generic rate limits and ambiguous quota errors do not retry.
-Streaming requests can retry an HTTP refusal before streaming starts; event streams never retry.
+Streaming requests can retry a billing HTTP refusal before streaming starts on the second key.
+That same-provider retry never retries an event stream; `automatic` can select a new provider
+only before the first client byte (`API.md` §2.1).
 Usage exposes `key_slot_1_requests` and `key_slot_2_requests` counters.
 
 OpenRouter accepts only `:free` models or `openrouter/free` and forces zero-price provider limits.
@@ -517,3 +548,45 @@ For smoke tests, supply the admin password separately as `MR_ADMIN_PASSWORD`.
 The user password still comes from `MROUTER_PASSWORD` or stdin.
 The script checks admin access returns 200 and the user password returns 403 on `/control/keys`.
 Both passwords are excluded from output and saved evidence.
+
+
+## Morph Ultra and automatic selection
+
+Deploy in this order:
+
+1. Apply migration 2. `/control/health` requires the latest schema.
+2. Add `MORPH_API_KEY` through the existing key-copy manifest.
+3. Deploy this version.
+
+The optional `MORPH_API_KEY_2` is its environment-only second billing key.
+`MORPH_BASE_URL` overrides the default `https://api.morphllm.com` origin; set origin overrides
+separately from the key-copy manifest. Production requires HTTPS.
+Key verification sends a Bearer-authenticated `GET /v1/models` and spends no tokens.
+
+The confirmed Ultra allowlist is exactly `morph-kimik31` and `morph-dsv41flash`.
+Morph's plan names both models as unmetered, the live model list includes both IDs, and Michael
+confirmed live calls to both cost nothing. `MORPH_INCLUDED_MODELS` in `src/routing.js` enforces
+the allowlist. Every other `morph-` name is rejected before any upstream call.
+Morph Ultra provides unmetered included usage, still subject to Morph rate and capacity limits.
+The table records zero marginal usage cost for these two IDs and a separate subscription note.
+Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
+
+`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `morph-dsv41flash`.
+Missing keys and active provider cooldowns are skipped. Only availability, rate and quota
+failures can advance the chain, and only before the first response byte. Requests with tools
+follow the same boundary; the router executes no tools and never replays a streamed tool call.
+The body and `x-router-model` identify the answerer; `x-router-fallback` explains earlier skips.
+See `API.md` §2.1 for the complete contract.
+
+Local handler tests use fake upstreams and invented keys. Separate live verification confirmed
+both Morph models and automatic fallback. Capacity remains subject to Morph limits.
+
+An operator can clear a stuck cooldown by deleting the affected provider's row, for example:
+
+```sql
+DELETE FROM michael_router.provider_cooldowns WHERE provider = 'claude';
+```
+
+Valid upstream retry delays are honored in full, with a 1 second minimum. Missing or malformed
+values use 30 seconds; extreme values are capped only at the largest end time JavaScript Date
+and the store can represent. Explicit model requests are never blocked by cooldowns.

@@ -149,7 +149,7 @@ test('successful control responses carry server-timing; x-router-cold and health
   assert.equal(first.json.store.kind, 'memory');
   assert.equal(typeof first.json.store.latency_ms, 'number');
   assert.equal(first.json.store.schema_version, LATEST_SCHEMA_VERSION);
-  assert.deepEqual(first.json.providers, { claude: { configured: true }, gemini: { configured: false }, openrouter: { configured: false }, openai: { configured: false } });
+  assert.deepEqual(first.json.providers, { claude: { configured: true }, gemini: { configured: false }, openrouter: { configured: false }, openai: { configured: false }, morph: { configured: false } });
   assert.ok(!first.text.includes('sk-ant-fake-SENTINEL'));
   const second = await h.call('/control/health', { headers: bearer() });
   assert.equal(second.json.instance.cold, false);

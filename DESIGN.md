@@ -19,7 +19,7 @@ Decorative sea light, textile simulation, and character art do not clarify the f
 
 ## First viewport
 
-An oversized serif statement names the four-to-one relationship.
+An oversized serif statement names the five-to-one relationship.
 A compact destination list names the providers.
 The primary action copies setup and jumps to its command. The command appears below the statement with no enclosing card.
 On phones, content stays in this same reading order.

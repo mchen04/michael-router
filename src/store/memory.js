@@ -41,6 +41,7 @@ export function createMemoryStore() {
   /** @type {{id: number, event: string}[]} oldest first */
   let events = [];
   let nextEventId = 1;
+  const cooldowns = new Map();
 
   /** @param {AuthRow} r @param {number} now */
   const activeInflight = (r, now) => (r.inflight_until_ms > now ? r.inflight : 0);
@@ -140,6 +141,20 @@ export function createMemoryStore() {
       return keys.delete(checkText(provider));
     },
 
+    async getCooldown(provider, nowMs) {
+      const row = cooldowns.get(checkText(provider));
+      const now = checkMs(nowMs);
+      return row && row.until_ms > now ? { untilMs: row.until_ms, reason: row.reason } : null;
+    },
+
+    async setCooldown(provider, untilMs, reason) {
+      checkText(provider);
+      checkMs(untilMs);
+      checkText(reason);
+      const previous = cooldowns.get(provider);
+      if (!previous || untilMs >= previous.until_ms) cooldowns.set(provider, { provider, until_ms: untilMs, reason });
+    },
+
     /**
      * @param {string} day
      * @param {{provider: string, model: string, metric: string, value: number}[]} entries
@@ -188,6 +203,7 @@ export function createMemoryStore() {
       return {
         auth_sources: [...auth.values()].map((r) => ({ ...r })),
         provider_keys: [...keys.values()].map((k) => ({ ...k })),
+        provider_cooldowns: [...cooldowns.values()].map((r) => ({ ...r })),
         usage_daily: [...usage.values()].map((r) => ({ ...r })),
         events: events.map((e) => ({ ...e })),
       };

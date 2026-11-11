@@ -10,15 +10,19 @@ import { PROVIDERS } from './config.js';
 import { GatewayError, errorEnvelope, jsonResponse, readBody } from './http.js';
 import { modelList } from './pricing.js';
 import * as claude from './providers/claude.js';
-import { bodyError, createRelay, gemini, openrouter, openai } from './providers/passthrough.js';
+import { bodyError, createRelay, gemini, openrouter, openai, morph } from './providers/passthrough.js';
 import { scrubJson } from './redact.js';
-import { routeImageModel, routeModel } from './routing.js';
+import { AUTOMATIC_CHAIN, classifyFallback, cooldownEnd, retryableBilling, routeImageModel, routeModel } from './routing.js';
 import { DONE, createSSEParser, serializeJson } from './sse.js';
 import { normalizeImageUsage, recordUsage } from './usage.js';
 import { VERSION } from './version.js';
 
+export { retryableBilling } from './routing.js';
+
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const UPSTREAM_TIMEOUT_MS = 295_000;
+export const AUTOMATIC_TIMEOUT_MS = UPSTREAM_TIMEOUT_MS - 10_000;
+const AUTOMATIC_MIN_ATTEMPT_MS = 1000;
 export const VERIFY_TIMEOUT_MS = 10_000;
 export const MAX_RESPONSE_BYTES = 4_500_000;
 const ERROR_BODY_MAX_BYTES = 64 * 1024;
@@ -27,7 +31,7 @@ const USER_AGENT = `michael-router/${VERSION}`;
 const UPSTREAM_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const RETRY_AFTER = /^(\d{1,9}|[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT)$/;
-const PASSTHROUGH = { gemini, openrouter, openai };
+const PASSTHROUGH = { gemini, openrouter, openai, morph };
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -45,8 +49,8 @@ function parseJson(text) {
 }
 
 /**
- * @typedef {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai', model: string, headers: Record<string, string>}} Target
- * @typedef {{message?: string, code?: string, httpCode?: number, reasons?: string[]}} UpstreamErrorInfo
+ * @typedef {{provider: 'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph', model: string, headers: Record<string, string>}} Target
+ * @typedef {{message?: string, code?: string, httpCode?: number, reasons?: string[], signals?: string[]}} UpstreamErrorInfo
  */
 
 /**
@@ -62,6 +66,7 @@ function errorInfo(e) {
     httpCode: Number.isInteger(e.code) && e.code >= 100 && e.code <= 599 ? e.code : undefined,
     // Google error details: [{"@type": "...ErrorInfo", "reason": "API_KEY_INVALID", ...}]
     reasons: Array.isArray(e.details) ? e.details.map((d) => d?.reason).filter((r) => typeof r === 'string') : [],
+    signals: [e.code, e.type, e.status].filter((r) => typeof r === 'string'),
   };
 }
 
@@ -98,12 +103,6 @@ export function mapUpstreamStatus(provider, status, info = {}) {
   return { status: status >= 400 && status <= 599 ? status : 502, code: null };
 }
 
-export function retryableBilling(status, info) {
-  if (![401, 402, 403, 429].includes(status)) return false;
-  const text = [info.code, info.message, ...(info.reasons ?? [])].join(' ');
-  return /insufficient_quota|credit|billing|payment|balance|quota.{0,60}(?:exhaust|daily|monthly|per.day)|(?:exhaust|insufficient|daily|monthly).{0,60}quota/i.test(text);
-}
-
 /**
  * Build the upstream request for a routed model.
  * @param {any} ctx
@@ -130,7 +129,7 @@ function prepare(ctx, { provider, model }, json, bytes) {
   return { url: baseUrl + p.chatPath, payload: r.payload, stream: r.stream, dropped: [], includeUsage: false, stripUsageOnly: r.stripUsageOnly };
 }
 
-/** @param {any} ctx @param {'claude' | 'gemini' | 'openrouter' | 'openai'} provider */
+/** @param {any} ctx @param {'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph'} provider */
 function requireKey(ctx, provider) {
   if (!ctx.keys[provider].configured) {
     throw new GatewayError(
@@ -144,16 +143,73 @@ function requireKey(ctx, provider) {
 /** POST /v1/chat/completions @param {any} ctx @returns {Promise<Response>} */
 export async function chatCompletions(ctx) {
   const { bytes, json } = await readBody(ctx.request, MAX_BODY_BYTES);
+  if (json.model === 'automatic') return automaticCompletion(ctx, json);
   const { provider, model } = routeModel(json.model);
   ctx.log.provider = provider;
   ctx.log.model = model;
   requireKey(ctx, provider);
-  /** @type {Target} */
-  const target = { provider, model, headers: { 'x-router-provider': provider } };
+  const target = { provider, model, headers: { 'x-router-provider': provider, 'x-router-model': model } };
+  return chatAttempt(ctx, json, bytes, target);
+}
+
+async function automaticCompletion(ctx, json) {
+  const deadlineAtMs = ctx.startedAtMs + Math.min(ctx.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS, AUTOMATIC_TIMEOUT_MS);
+  const skipped = [];
+  for (const step of AUTOMATIC_CHAIN) {
+    const { provider, model } = step;
+    if (ctx.request.signal.aborted) return clientGone(ctx, { ...step, headers: {} });
+    if (!ctx.keys[provider]?.configured) {
+      skipped.push({ ...step, reason: classifyFallback({ configured: false }) });
+      continue;
+    }
+    if (deadlineAtMs - ctx.now() < AUTOMATIC_MIN_ATTEMPT_MS) {
+      skipped.push({ ...step, reason: 'deadline_exhausted' });
+      continue;
+    }
+    const cooldown = await ctx.store.getCooldown(provider, ctx.now()).catch(() => null);
+    if (cooldown) {
+      skipped.push({ ...step, reason: 'cooldown', cause: cooldown.reason, untilMs: cooldown.untilMs });
+      continue;
+    }
+    if (deadlineAtMs - ctx.now() < AUTOMATIC_MIN_ATTEMPT_MS) {
+      skipped.push({ ...step, reason: 'deadline_exhausted' });
+      continue;
+    }
+    ctx.log.provider = provider;
+    ctx.log.model = model;
+    ctx.error = null;
+    const target = { ...step, automatic: true, deadlineAtMs, failure: null, headers: { 'x-router-provider': provider, 'x-router-model': model } };
+    const body = { ...json, model };
+    const response = await chatAttempt(ctx, body, new TextEncoder().encode(JSON.stringify(body)), target);
+    if (!target.failure) {
+      response.headers.set('x-router-fallback', skipped.map((s) => `${s.provider}:${s.reason}`).join(','));
+      return response;
+    }
+    const { reason, retryAfter } = target.failure;
+    const untilMs = cooldownEnd(retryAfter, ctx.now());
+    await response.body?.cancel().catch(() => {});
+    await ctx.store.setCooldown(provider, untilMs, reason).catch(() => {});
+    skipped.push({ ...step, reason, untilMs });
+  }
+  ctx.log.provider = undefined;
+  ctx.log.model = undefined;
+  const rateLimited = skipped.every((s) => (s.cause ?? s.reason) === 'rate_limited');
+  const deadlines = skipped.filter((s) => s.untilMs !== undefined).map((s) => s.untilMs);
+  const retryAfter = Math.max(1, Math.ceil(((deadlines.length ? Math.min(...deadlines) : cooldownEnd(null, ctx.now())) - ctx.now()) / 1000));
+  return ctx.fail(rateLimited ? 429 : 503, 'all_providers_unavailable',
+    'All automatic steps unavailable: ' + skipped.map((s) => `${s.model} (${s.provider}:${s.reason})`).join(', ') + '.',
+    { 'retry-after': String(retryAfter), 'x-router-fallback': skipped.map((s) => `${s.provider}:${s.reason}`).join(',') });
+}
+
+async function chatAttempt(ctx, json, bytes, target) {
+  const { provider, model } = target;
+  if (target.automatic) routeModel(model);
   const up = prepare(ctx, target, json, bytes);
   if (up.dropped.length) target.headers['x-router-dropped-params'] = up.dropped.join(', ');
 
-  const timeoutMs = ctx.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
+  const timeoutMs = target.deadlineAtMs === undefined
+    ? ctx.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS
+    : Math.max(1, target.deadlineAtMs - ctx.now());
   const deadline = upstreamDeadline(ctx.request.signal, timeoutMs);
   /** @param {unknown} err */
   const broken = (err) => {
@@ -168,6 +224,10 @@ export async function chatCompletions(ctx) {
     ctx.keySlot = attempt + 1;
     const key = attempt === 0 ? ctx.keys[provider].key : ctx.config.providers[provider].fallbackKey;
     const auth = provider === 'claude' ? claude.authHeaders(key) : PASSTHROUGH[provider].authHeaders(key);
+    if (target.automatic && target.deadlineAtMs - ctx.now() < AUTOMATIC_MIN_ATTEMPT_MS) {
+      deadline.clear();
+      return ctx.fail(504, 'upstream_timeout', 'Automatic request deadline exhausted.', target.headers);
+    }
     try {
       res = await fetch(up.url, {
         method: 'POST',
@@ -221,6 +281,7 @@ export async function chatCompletions(ctx) {
     recordUsage(ctx, { provider, model, error: false, billable: true, usage: out.usage, usageFinal: out.usage !== null });
     return new Response(scrubJson(JSON.stringify(out.body), ctx.redact), { status: res.status, headers: { 'content-type': 'application/json; charset=utf-8', ...target.headers } });
   }
+  if ((target.automatic || provider === 'morph') && isObject(body)) raw = new TextEncoder().encode(JSON.stringify({ ...body, model }));
   const usage = PASSTHROUGH[provider].usage(isObject(body) ? body.usage : null);
   recordUsage(ctx, { provider, model, error: false, billable: true, usage, usageFinal: usage !== null });
   return new Response(scrubJson(new TextDecoder().decode(raw), ctx.redact), { status: res.status, headers: { 'content-type': ctx.redact(res.headers.get('content-type') ?? 'application/json'), ...target.headers } });
@@ -362,6 +423,8 @@ async function readText(res, max) {
  * @param {string | null} retryAfter @param {number} [upstreamStatus]
  */
 function httpError(ctx, target, status, info, retryAfter, upstreamStatus = status) {
+  const reason = classifyFallback({ status, info, aborted: ctx.request.signal.aborted });
+  if (reason) target.failure = { reason, retryAfter };
   const mapped = mapUpstreamStatus(target.provider, status, info);
   const upstreamMessage = info.message ?? `HTTP ${upstreamStatus}`;
   const message =
@@ -384,6 +447,7 @@ function httpError(ctx, target, status, info, retryAfter, upstreamStatus = statu
  */
 function failure(ctx, target, err, deadline, timeoutMs) {
   if (ctx.request.signal.aborted) return clientGone(ctx, target);
+  target.failure = { reason: classifyFallback({ network: true }), retryAfter: null };
   if (deadline.timedOut) {
     const message = `${target.provider} did not respond within ${Math.round(timeoutMs / 1000)} s.`;
     return upstreamError(ctx, target, { status: 504, code: 'upstream_timeout', message, billable: true });
@@ -425,17 +489,18 @@ function clientGone(ctx, target) {
  * @param {ReturnType<typeof upstreamDeadline>} deadline client disconnect or upstream timeout, cleared when the stream is finished
  * @param {number} timeoutMs
  */
-function relayStream(ctx, target, up, res, deadline, timeoutMs) {
+async function relayStream(ctx, target, up, res, deadline, timeoutMs) {
   const { provider, model } = target;
   const { signal } = deadline;
   const tap =
     provider === 'claude'
       ? claude.createStreamTranslator({ model, created: Math.floor(ctx.now() / 1000), includeUsage: up.includeUsage })
-      : createRelay({ stripUsageOnly: up.stripUsageOnly, normalize: PASSTHROUGH[provider].usage });
+      : createRelay({ stripUsageOnly: up.stripUsageOnly, normalize: PASSTHROUGH[provider].usage, model: target.automatic || provider === 'morph' ? model : undefined });
   const reader = /** @type {ReadableStream<Uint8Array>} */ (res.body).getReader();
   const parser = createSSEParser();
   const encoder = new TextEncoder();
   let settled = false;
+  let emitted = false;
   /** @type {(v?: unknown) => void} */
   let settle = () => {};
   ctx.waitUntil(new Promise((resolve) => (settle = resolve)));
@@ -454,7 +519,8 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
       ctx.error = { status: 200, code: 'client_disconnected', recorded: true };
     }
     recordUsage(ctx, { provider, model, error: outcome.kind === 'error', billable: true, usage: tap.usage, usageFinal: tap.usageFinal });
-    ctx.finishLog(200);
+    if (target.automatic && target.failure) ctx.deferLog = false;
+    else ctx.finishLog(200);
     settle();
   };
   /** @param {string} code @param {string} message */
@@ -469,6 +535,7 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
   function onAbort() {
     if (ctx.request.signal.aborted) return finish({ kind: 'aborted' });
     const e = timeoutChunk();
+    if (target.automatic && !emitted) target.failure = { reason: classifyFallback({ network: true }), retryAfter: null };
     finish({ kind: 'error', code: e.code, message: e.message });
   }
   signal.addEventListener('abort', onAbort, { once: true });
@@ -476,7 +543,10 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
   /** @param {ReadableStreamDefaultController<Uint8Array>} controller @param {string} out @param {Parameters<typeof finish>[0]} outcome */
   const end = (controller, out, outcome) => {
     try {
-      if (out) controller.enqueue(encoder.encode(out));
+      if (out) {
+        controller.enqueue(encoder.encode(out));
+        emitted = true;
+      }
       controller.close();
     } catch {
       // the client already cancelled
@@ -493,11 +563,14 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
             const { done, value } = await reader.read();
             let out = '';
             for (const item of done ? parser.end() : parser.push(value)) {
-              const step = tap.onItem(item);
+              const embeddedError = target.automatic && 'data' in item ? bodyError(parseJson(item.data)) : null;
+              const step = embeddedError ? { error: embeddedError } : tap.onItem(item);
               if (step.out) out += step.out.split('\n').map((line) => line.startsWith('data: ') ? `data: ${scrubJson(line.slice(6), ctx.redact)}` : ctx.redact(line)).join('\n');
               if (step.error) {
                 // Normalized and scrubbed; anything after it (including a [DONE]) is dropped.
                 const info = errorInfo(step.error);
+                const reason = classifyFallback({ status: info.httpCode, info });
+                if (target.automatic && !emitted && !out && reason) target.failure = { reason, retryAfter: res.headers.get('retry-after') };
                 const special = info.httpCode ? mapUpstreamStatus(provider, info.httpCode, info).code : null;
                 const e = errorChunk(special ?? info.code ?? 'provider_error', info.message ?? 'Upstream stream error.');
                 return end(controller, out + e.text, { kind: 'error', code: e.code, message: e.message });
@@ -505,13 +578,18 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
               if (step.done) return end(controller, out + DONE, { kind: 'done' });
             }
             if (done) {
+              if (target.automatic && !emitted && !out) target.failure = { reason: classifyFallback({ network: true }), retryAfter: res.headers.get('retry-after') };
               const e = errorChunk('upstream_stream_incomplete', `The ${provider} stream ended before it completed.`);
               return end(controller, out + e.text, { kind: 'error', code: e.code, message: e.message });
             }
-            if (out) return controller.enqueue(encoder.encode(out));
+            if (out) {
+              emitted = true;
+              return controller.enqueue(encoder.encode(out));
+            }
           }
         } catch {
           if (ctx.request.signal.aborted) return end(controller, '', { kind: 'aborted' });
+          if (target.automatic && !emitted) target.failure = { reason: classifyFallback({ network: true }), retryAfter: res.headers.get('retry-after') };
           const e = deadline.timedOut ? timeoutChunk() : errorChunk('upstream_stream_incomplete', `The ${provider} stream broke before it completed.`);
           end(controller, e.text, { kind: 'error', code: e.code, message: e.message });
         }
@@ -523,19 +601,42 @@ function relayStream(ctx, target, up, res, deadline, timeoutMs) {
     },
     { highWaterMark: 0 },
   );
-  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', ...target.headers } });
+  let output = body;
+  if (target.automatic) {
+    const primed = body.getReader();
+    const first = await primed.read();
+    if (target.failure) {
+      await primed.cancel().catch(() => {});
+      return jsonResponse(502, errorEnvelope({ message: 'Upstream stream failed before commitment.', code: 'provider_error' }), target.headers);
+    }
+    let initial = first;
+    output = new ReadableStream({
+      async pull(controller) {
+        const next = initial ?? await primed.read();
+        initial = null;
+        if (next.done) controller.close();
+        else controller.enqueue(next.value);
+      },
+      cancel() { return primed.cancel(); },
+    }, { highWaterMark: 0 });
+  }
+  return new Response(output, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', ...target.headers } });
 }
 
 /** GET /v1/models: known models of configured providers. @param {any} ctx */
 export function listModels(ctx) {
-  return jsonResponse(200, { object: 'list', data: modelList((provider) => Boolean(ctx.keys[provider]?.configured)) });
+  const data = modelList((provider) => Boolean(ctx.keys[provider]?.configured));
+  if (AUTOMATIC_CHAIN.some((step) => ctx.keys[step.provider]?.configured)) {
+    data.push({ id: 'automatic', object: 'model', created: 0, owned_by: 'router', description: AUTOMATIC_CHAIN.map((step) => step.model).join(' then ') + '; fallback only on unavailability, rate limits or exhausted quota.' });
+  }
+  return jsonResponse(200, { object: 'list', data });
 }
 
 /**
  * Verify a key against the provider's model-list endpoint (no token spend): `true` on 2xx, `false`
  * when the provider refused the key (a 4xx other than 408/429), `null` when it could not judge it
  * (408, 429, 5xx). Network failures throw (the caller treats them as `null`).
- * @param {'claude' | 'gemini' | 'openrouter' | 'openai'} provider
+ * @param {'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph'} provider
  * @param {string} key
  * @param {any} ctx
  * @returns {Promise<{verified: boolean | null, upstream_status: number}>}

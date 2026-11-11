@@ -11,7 +11,7 @@ The interfaces are specified in `DESIGN.md`; security reasoning is in `SECURITY.
   landing page. This is what OpenAI SDKs send for `api_key`. No other scheme is accepted
   (`x-api-key`, Basic and an empty bearer count as no credential).
   `/v1/*` accepts the shared user password or admin password. `/control/*` accepts only the admin password.
-- **Provider keys stay on the server.** Clients never send Anthropic, Gemini, OpenRouter or OpenAI keys;
+- **Provider keys stay on the server.** Clients never send Anthropic, Gemini, OpenRouter, OpenAI or Morph keys;
   the gateway uses the key configured for the provider (a key stored with `mrouter keys set`
   overrides the environment variable).
 - No CORS headers are sent. Foreign `Origin` and `Sec-Fetch-Site: cross-site` requests return 403 after authentication.
@@ -44,8 +44,8 @@ authentication, so the route table cannot be probed without the password.
   "commit": "<short commit or null>",
   "region": "<function region or null>",
   "instance": { "started_at": "<ISO time>", "age_s": 12, "cold": false },
-  "store": { "kind": "postgres", "latency_ms": 3.2, "schema_version": 1 },
-  "providers": { "claude": { "configured": true }, "gemini": { "configured": true }, "openrouter": { "configured": false }, "openai": { "configured": true } }
+  "store": { "kind": "postgres", "latency_ms": 3.2, "schema_version": 2 },
+  "providers": { "claude": { "configured": true }, "gemini": { "configured": true }, "openrouter": { "configured": false }, "openai": { "configured": true }, "morph": { "configured": false } }
 }
 ```
 
@@ -75,6 +75,8 @@ configured: true, source: "store", updated_at}`.
 
 | Rule | Provider | Example |
 |------|----------|---------|
+| exactly `automatic` | ordered selection (§2.1) | `automatic` |
+| starts with `morph-` | `morph`, included Ultra allowlist only | `morph-kimik31`, `morph-dsv41flash` |
 | contains `/` | `openrouter` (name forwarded unchanged) | `openrouter/free`, `vendor/model:free` |
 | starts with `claude-` | `claude` (Anthropic Messages API, translated) | `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | starts with `gemini-` | `gemini` (Gemini's OpenAI-compatible endpoint) | `gemini-2.5-flash` |
@@ -82,8 +84,104 @@ configured: true, source: "store", updated_at}`.
 | anything else | 400 `model_not_routable` | `unknown-model` |
 
 OpenRouter requires `:free` at the end, or exactly `openrouter/free`; other names return 400 `model_not_allowed`.
-Model names are not checked against the price list: any name a provider accepts works. `/v1/models`
+Morph accepts exactly `morph-kimik31` (Kimi K3.1 Pro) and `morph-dsv41flash` (DeepSeek V4.1 Flash).
+Any other name starting with `morph-` returns 400 `model_not_allowed` before an upstream call.
+Except for the Morph and OpenRouter allowlists, model names are not checked against the price list: any name a provider accepts works. `/v1/models`
 lists the models the gateway has metadata and prices for.
+
+### 2.1 Automatic selection
+
+`model: "automatic"` uses this ordered chain, defined once in `src/routing.js`:
+
+1. `claude-opus-5-5` on `claude`.
+2. `gpt-6.1-sol` on `openai`.
+3. `morph-dsv41flash` on `morph`.
+
+A provider without a configured primary key or stored override is skipped.
+An active provider cooldown is also skipped. Explicit model requests bypass cooldowns and never
+move to another model, including explicit `morph-kimik31` and `morph-dsv41flash` requests.
+Each automatic step is visited once. The existing second-key billing retry in §3.1.1 runs within
+a step before the chain can move on; it never repeats successful work.
+
+| Outcome before commitment | Automatic behavior |
+| --- | --- |
+| HTTP 429 without an exhaustion signal | Move to the next step with reason `rate_limited` |
+| HTTP 402, `insufficient_quota`, or recognized billing or exhausted-credit error | After any eligible second-key retry, move on with reason `quota_exhausted` |
+| HTTP 500, 502, 503, 504 or 529; Anthropic `overloaded_error` | Move on with reason `unavailable` |
+| Network failure or timeout | Move on with reason `unavailable`, unless the client disconnected |
+| HTTP 400, 404, 413 or 422, or another request error without an availability signal | Return the existing error; stop |
+| HTTP 401 or 403 authentication or permission failure | Return the existing error; stop |
+| Context-length error or content-policy or safety refusal | Return it; stop, even when wrapped in another error |
+| Any successful completion, including Claude `stop_reason: "refusal"` or `finish_reason: "content_filter"` | Return it; stop |
+
+Only explicit safety or content-policy signals and context-length signals override availability
+statuses (429, 402, 500, 502, 503, 504 or 529), quota-exhaustion signals or `overloaded_error`.
+Generic invalid, unsupported, not-found, permission, forbidden, not-allowed, bad-request and
+authentication wording does not override availability. HTTP 400, 404, 413 and 422 stop the
+chain; HTTP 401 and 403 stop it unless the existing billing or quota-exhaustion rule applies.
+A normal successful refusal never triggers another provider call.
+
+Before commitment, stream errors without numeric status use their provider type.
+`rate_limit_error` and `rate_limit_exceeded` mean `rate_limited`; `billing_error` and
+`insufficient_quota` mean `quota_exhausted`; `api_error`, `overloaded_error`, `timeout_error`
+and `server_error` mean `unavailable`. Authentication, permission, invalid-request and not-found
+types without an availability status stop the chain. Token-per-minute wording alone is a rate
+limit, not a context-length signal.
+
+Automatic uses one request-wide budget of at most 285 seconds, measured from request entry,
+including authentication and store reads. This leaves 15 seconds below the 300-second Vercel
+limit for final state writes and response delivery. Each attempt, including its billing-key
+retry and stream, gets only the remaining time. A new step requires at least 1 second remaining;
+otherwise it is skipped with `deadline_exhausted`. Exhaustion returns `all_providers_unavailable`
+or 504 `upstream_timeout` if it occurs during request preparation or before a billing-key retry,
+without starting another upstream request. Explicit requests retain their 295-second timeout.
+
+**Commitment is the first byte written to the client.** A stream is held until its first output
+byte, including a comment, role chunk or tool call. An eligible failure before that byte can
+select the next step. After that byte, an upstream failure ends the stream with the existing
+terminal error event and no `[DONE]`; it never restarts on another provider.
+The router never executes tools. Requests containing tools or tool results can fall back only
+before commitment. A tool call already streamed is never sent again by the router.
+
+A fallback stores a provider cooldown shared across all function instances in PostgreSQL.
+Provider scope covers account quota and provider capacity across models; explicit requests remain usable.
+Valid upstream `Retry-After` seconds or IMF-fixdate HTTP dates are honored in full, with a
+1 second minimum. Absent or malformed values use 30 seconds. Extreme values are capped only
+at the largest end time JavaScript Date and the store can represent: 8640000000000000 ms.
+Later automatic requests skip that provider until the end time, then try it again in order.
+Cooldown read or write errors mean no cooldown is known and cannot fail a healthy request.
+Missing keys do not create cooldowns. An operator can clear a stuck cooldown by deleting that
+provider's row from `michael_router.provider_cooldowns`. Explicit model requests are never
+blocked by cooldowns.
+
+The response body `model`, streaming chunks and `x-router-model` name the model that answered.
+`x-router-provider` names its provider. `x-router-fallback` lists earlier skipped steps and
+reasons in order, for example `claude:rate_limited,openai:cooldown`.
+Reasons are `not_configured`, `cooldown`, `rate_limited`, `quota_exhausted`, `unavailable` and `deadline_exhausted`.
+The header is empty when the first step answers.
+Usage belongs to the answering model; failed upstream attempts retain error accounting.
+
+When no step can answer, the gateway returns `all_providers_unavailable` with HTTP 503,
+or HTTP 429 when every step's failure was a rate limit, including active rate-limit cooldowns.
+The error message lists all model steps and safe skip reasons without keys or upstream messages.
+`Retry-After` is the ceiling in seconds until the soonest known cooldown end, at least 1 second.
+When no cooldown is known, it is 30 seconds. Missing-key skips do not shorten real cooldowns.
+
+```json
+{"error":{"message":"All automatic steps unavailable: claude-opus-5-5 (claude:rate_limited), gpt-6.1-sol (openai:cooldown), morph-dsv41flash (morph:not_configured).","type":"gateway_error","code":"all_providers_unavailable"}}
+```
+
+For example, after setting the usual client environment locally:
+
+```sh
+printf 'Authorization: Bearer %s\n' "$OPENAI_API_KEY" |
+  curl -sS "$OPENAI_BASE_URL/chat/completions" -H @- -H 'Content-Type: application/json' \
+    -d '{"model":"automatic","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+Free group access does not make Claude or OpenAI calls free to Michael, the owner.
+Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
+The allowlisted Morph models have zero marginal usage cost under Ultra; subscription cost is separate.
 
 ## 3. Chat completions
 
@@ -115,15 +213,21 @@ What every provider route shares:
   and `user-agent: michael-router/<version>`. Nothing from the client's headers is forwarded.
 - Redirects from a provider are never followed (the request fails with 502
   `upstream_unreachable`), so a key or prompt cannot be re-sent to another origin.
-- The upstream timeout is 295 s for the whole response, including the stream.
+- Explicit model requests have a 295 s upstream timeout for the whole response, including the stream.
+  Automatic attempts share the remaining request-wide budget of at most 285 s (§2.1).
 - A client disconnect aborts the upstream request.
 
-### 3.1 OpenAI, Gemini and OpenRouter
+### 3.1 OpenAI, Gemini, OpenRouter and Morph
 
 OpenAI forwards to `POST https://api.openai.com/v1/chat/completions` by default.
 Set `OPENAI_BASE_URL` to override the server origin.
 OpenAI and Gemini preserve request bytes except when adding the default effort, renaming OpenAI token limits, or requesting streaming usage.
 For streams, the router sets `stream_options.include_usage = true` and removes unrequested usage-only chunks.
+
+Morph forwards to `POST https://api.morphllm.com/v1/chat/completions` with Bearer authentication.
+`MORPH_BASE_URL` overrides its origin. Request and response fields pass through, including tools;
+Morph receives no default effort field. Streaming usage is requested and unrequested usage-only
+chunks are removed as for OpenAI.
 
 OpenRouter accepts only `:free` names and `openrouter/free`.
 It rejects `models`, `route`, `preset` and `plugins` with 400 `model_not_allowed`.
@@ -144,6 +248,7 @@ A 200 response containing only an error becomes an error response.
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_API_KEY_2` |
 | Gemini | `GEMINI_API_KEY` | `GEMINI_API_KEY_2` |
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY_2` |
+| Morph | `MORPH_API_KEY` | `MORPH_API_KEY_2` |
 
 A stored key replaces slot 1. Slot 2 always comes from the fallback environment variable.
 A fallback alone does not configure a provider.
@@ -151,8 +256,9 @@ The router retries once when slot 1 returns HTTP 401, 402, 403 or 429 with clear
 This includes credit, billing, payment or balance errors, `insufficient_quota`, and exhausted, daily or monthly quota errors.
 A generic rate limit, generic quota limit, invalid key, network error or timeout does not trigger a retry.
 A 200 JSON error with one of those numeric statuses follows the same rule.
-Both attempts share the 295-second deadline.
-The router never retries an event stream, even if its first event is an error.
+Both key attempts share the explicit request's 295-second deadline, or the remaining automatic budget (§2.1).
+This same-provider second-key retry never retries an event stream.
+Automatic selection can move to a different provider before its first output byte (§2.1).
 No primary response bytes reach the client before a retry.
 
 ### 3.2 Claude (translated to the Messages API)
@@ -274,7 +380,9 @@ after its error is dropped. Treat a stream without `[DONE]` as failed.
 ]}
 ```
 
-Only providers with a key appear. `context_length` and `max_output_tokens` are present when
+Only providers with a key appear. The two included Morph IDs appear when Morph is configured.
+`automatic` appears when any chain provider is configured, with a short description of its order.
+`context_length` and `max_output_tokens` are present when
 known. The list comes from the gateway's price table, so it is not exhaustive (§2).
 
 ### 5.2 Usage accounting
@@ -380,6 +488,7 @@ messages are kept but scrubbed of anything key-like and truncated to 1000 charac
 | 500 | `internal_error` | unexpected gateway failure | maybe |
 | 503 | `server_misconfigured` | configuration missing or invalid; variable names require successful authentication | no: fix the deployment |
 | 503 | `store_unavailable` | the store failed, did not connect within 5 s, answered slower than 1.5 s, or its schema is missing or older than the code; the request was refused | yes, with backoff |
+| 503 or 429 | `all_providers_unavailable` | every automatic step failed or was skipped (§2.1) | after `Retry-After`; configure missing keys separately |
 | 503 | `provider_not_configured` | the routed provider has no key | no: configure a key |
 | 502 | `provider_auth_failed` | the provider rejected the router's key for it (an upstream 401, or a Gemini 400 saying "API key not valid" or "API key expired", or with reason `API_KEY_INVALID`) | no: fix the provider key |
 | 502 | `key_verification_unavailable` | `PUT /control/keys` with `verify`: the check could not be completed; the key was not stored | yes, or store with `"verify": false` |
@@ -409,13 +518,15 @@ Response headers on protected routes:
 | Header | Value |
 |--------|-------|
 | `x-router-request-id` | the request id (also in the gateway's log line and in events) |
-| `x-router-provider` | the provider a chat or image request was routed to |
+| `x-router-provider` | the answering provider for chat; the routed provider for images |
+| `x-router-model` | the answering chat model, also present in automatic response bodies and chunks |
+| `x-router-fallback` | automatic only: ordered skipped provider/reason pairs; empty when no earlier step was skipped |
 | `x-router-error-source` | `gateway` or `upstream`, on errors |
 | `x-router-dropped-params` | Claude: comma-separated parameters that were dropped (`temperature, top_p`) |
 | `x-router-adjusted-params` | images: the fields the router set or lowered, with their values (§3.3) |
 | `server-timing` | `auth`, `store`, `upstream` (time to the provider's response headers), `gw` (gateway total before the first byte), in ms |
 | `x-router-cold` | `1` on the first request a function instance serves (when that request is authenticated); absent otherwise |
-| `retry-after` | on 429s, and on 401s after a wait was imposed |
+| `retry-after` | limiter waits, safe upstream values, and the soonest cooldown end for `all_providers_unavailable` (§2.1) |
 | `cache-control` | `no-store` |
 
 ## 8. Limits

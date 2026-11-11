@@ -43,6 +43,8 @@ export const EXIT = Object.freeze({ OK: 0, ERROR: 1, USAGE: 2, STOPPED: 3 });
 
 /** The only variables a manifest may set, and how each value is checked. */
 const NAMES = Object.freeze({
+  MORPH_API_KEY: 'provider-key',
+  MORPH_API_KEY_2: 'provider-key',
   OPENAI_API_KEY: 'provider-key',
   OPENAI_API_KEY_2: 'provider-key',
   ANTHROPIC_API_KEY: 'provider-key',

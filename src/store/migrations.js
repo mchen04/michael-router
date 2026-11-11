@@ -65,6 +65,16 @@ COMMENT ON TABLE michael_router.usage_daily IS 'Usage counters per UTC day, kept
 COMMENT ON TABLE michael_router.events IS 'Recent auth and error events, allowlisted metadata only';
 `,
   }),
+  Object.freeze({
+    version: 2,
+    name: 'provider cooldowns',
+    sql: `CREATE TABLE IF NOT EXISTS michael_router.provider_cooldowns (
+  provider text PRIMARY KEY,
+  until_ms bigint NOT NULL,
+  reason text NOT NULL
+);
+`,
+  }),
 ]);
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

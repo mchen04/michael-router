@@ -12,7 +12,7 @@ The owner's developer friends already have the shared password. They want to sen
 
 ## Product Purpose
 
-Michael Router provides one private OpenAI Chat Completions endpoint for four providers.
+Michael Router provides one private OpenAI Chat Completions endpoint for five providers.
 Success means a visitor makes a working first request in under a minute.
 
 ## Operating Context
@@ -22,8 +22,9 @@ The password is supplied privately. The public site never accepts or displays a 
 
 ## Capabilities and Constraints
 
-The model ID selects Claude, OpenAI, Gemini, or free OpenRouter models.
-Only the supplied models tested on 2026-10-29 appear publicly.
+The model ID selects Claude, OpenAI, Gemini, Morph Ultra, or free OpenRouter models.
+Automatic selection tries Claude, OpenAI, then Morph for availability, rate or quota failure before the first response byte.
+The public catalog includes the supplied tested models and both confirmed Morph Ultra IDs.
 Each provider has a recommended default and one copyable request.
 The API guide explains connection, routing, streaming, and recovery.
 The catalog lists tested models. The agent guide gives short instructions.

@@ -100,7 +100,7 @@ test('records every check with only the allowed fields, labelled as mocked, and 
 
     assert.deepEqual(Object.keys(ev.control), ['health', 'keys', 'user_control', 'usage', 'errors', 'unauthenticated', 'wrong_password']);
     for (const [name, check] of Object.entries(ev.control)) assert.equal(/** @type {any} */ (check).result, 'ok', name);
-    assert.deepEqual(ev.control.keys.keys.map((/** @type {any} */ k) => k.provider), ['claude', 'gemini', 'openrouter', 'openai']);
+    assert.deepEqual(ev.control.keys.keys.map((/** @type {any} */ k) => k.provider), ['claude', 'gemini', 'openrouter', 'openai', 'morph']);
     for (const e of ev.control.errors.events) assert.ok(!('message' in e) && !('source' in e));
 
     const md = await readFile(r.out.replace(/\.json$/, '.md'), 'utf8');

@@ -47,8 +47,8 @@ test('key validation: 8-512 printable non-space ASCII; messages never contain th
   assert.match(String(validateProviderKey('1234567')), /8 to 512/);
 });
 
-test('only the three provider ids are accepted (no aliases)', () => {
-  for (const id of ['claude', 'gemini', 'openrouter', 'openai']) assert.ok(isProviderId(id));
+test('only canonical provider ids are accepted (no aliases)', () => {
+  for (const id of ['claude', 'gemini', 'openrouter', 'openai', 'morph']) assert.ok(isProviderId(id));
   for (const id of ['anthropic', 'Claude', 'CLAUDE', 'google', 'gemini ', 'open-router', 'or', '', 'constructor', '__proto__']) {
     assert.equal(isProviderId(id), false, id);
   }
@@ -95,6 +95,7 @@ test('keys over the handler: set, list (never values), unset, validation, aliase
     { provider: 'gemini', configured: false, source: 'none', updated_at: null },
     { provider: 'openrouter', configured: false, source: 'none', updated_at: null },
     { provider: 'openai', configured: false, source: 'none', updated_at: null },
+    { provider: 'morph', configured: false, source: 'none', updated_at: null },
   ]);
 
   const set = await put('claude', { key: STORE_KEY });
@@ -178,6 +179,7 @@ test('swapped records over the handler: not configured + gateway event, never a 
       ['gemini', false, 'none'],
       ['openrouter', false, 'none'],
       ['openai', false, 'none'],
+      ['morph', false, 'none'],
     ],
   );
   await h.settle();

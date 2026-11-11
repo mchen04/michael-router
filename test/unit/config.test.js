@@ -13,7 +13,7 @@ test('a complete dev configuration has no problems and is frozen', async () => {
   assert.equal(config.sourceKey?.length, 32);
   assert.notDeepEqual(config.keyEncryptionKey, config.sourceKey);
   assert.ok(Object.isFrozen(config) && Object.isFrozen(config.limiter) && Object.isFrozen(config.providers.claude));
-  assert.deepEqual([...PROVIDER_IDS], ['claude', 'gemini', 'openrouter', 'openai']);
+  assert.deepEqual([...PROVIDER_IDS], ['claude', 'gemini', 'openrouter', 'openai', 'morph']);
 });
 
 test('missing or malformed ROUTER_PASSWORD_HASH and ROUTER_SECRET are reported by name', async () => {
