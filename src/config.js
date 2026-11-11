@@ -6,7 +6,7 @@ import { parsePasswordHash } from './auth.js';
 import { databaseUrlSecrets, parseDatabaseUrl } from './store/database-url.js';
 import { VERSION, shortCommit } from './version.js';
 
-/** Provider ids are exactly these three; no aliases. */
+/** Internal provider IDs and their display labels. */
 export const PROVIDERS = Object.freeze({
   claude: Object.freeze({ id: 'claude', label: 'claude', keyEnv: 'ANTHROPIC_API_KEY', baseUrlEnv: 'ANTHROPIC_BASE_URL', defaultBaseUrl: 'https://api.anthropic.com' }),
   gemini: Object.freeze({ id: 'gemini', label: 'gemini', keyEnv: 'GEMINI_API_KEY', baseUrlEnv: 'GEMINI_BASE_URL', defaultBaseUrl: 'https://generativelanguage.googleapis.com' }),

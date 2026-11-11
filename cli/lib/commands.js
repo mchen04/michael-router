@@ -50,7 +50,7 @@ function providerArg(ctx, secretContext) {
   if (secretContext && (extra.length || !(known || SAFE_WORD.test(provider)))) throw usageError(KEY_ARGUMENT_REFUSAL);
   if (!known) throw usageError(`unknown provider${SAFE_WORD.test(provider) ? ` "${provider}"` : ''}; use one of: ${PROVIDER_LABELS.join(', ')}`);
   if (extra.length) throw usageError(`${verb} takes exactly one provider`);
-  return /** @type {'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph'} */ (known);
+  return known;
 }
 
 /** @param {Context} ctx @param {string} message */
@@ -505,12 +505,13 @@ async function smoke(client, provider, model, stream) {
 
 /** @param {Context} ctx */
 async function test(ctx) {
-  for (const p of ctx.positionals) {
-    if (!providerId(p)) {
+  const requested = [...new Set(ctx.positionals.map((p) => {
+    const id = providerId(p);
+    if (!id) {
       throw usageError(`unknown provider${SAFE_WORD.test(p) ? ` "${p}"` : ''}; use any of: ${PROVIDER_LABELS.join(', ')}`);
     }
-  }
-  const requested = [...new Set(ctx.positionals.map(providerId))];
+    return id;
+  }))];
   const modelFlag = typeof ctx.flags.model === 'string' ? ctx.flags.model : undefined;
   let modelProvider;
   if (modelFlag !== undefined) {
