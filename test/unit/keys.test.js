@@ -188,3 +188,26 @@ test('swapped records over the handler: not configured + gateway event, never a 
   assert.deepEqual(codes, ['provider_key_undecryptable:claude', 'provider_key_undecryptable:gemini']);
   assert.equal((await h.call('/control/health', { headers: bearer() })).json.providers.claude.configured, false);
 });
+
+test('invalid provider advice lists identifiers accepted by the same key endpoint', async () => {
+  const h = await makeHarness();
+  const put = (provider) => h.call(`/control/keys/${provider}`, {
+    method: 'PUT',
+    headers: bearer(),
+    body: JSON.stringify({ key: 'fake-SENTINEL-control-key-12345', verify: false }),
+  });
+  const invalid = await put('included');
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.json.error.code, 'invalid_provider');
+  const match = invalid.json.error.message.match(/^Unknown provider; use one of: (.+)\.$/);
+  assert.ok(match);
+  const identifiers = match[1].split(', ');
+  for (const provider of identifiers) {
+    const accepted = await put(provider);
+    assert.equal(accepted.status, 200, `${provider} is advertised as accepted`);
+    assert.equal(accepted.json.provider, provider);
+  }
+  const listed = await h.call('/control/keys', { headers: bearer() });
+  assert.deepEqual(identifiers, listed.json.map((entry) => entry.provider));
+  await h.settle();
+});

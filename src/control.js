@@ -18,7 +18,7 @@ const round1 = (ms) => Math.round(ms * 10) / 10;
 function providerParam(ctx) {
   const provider = ctx.params.provider;
   if (!isProviderId(provider)) {
-    throw new GatewayError(400, 'invalid_provider', `Unknown provider; use one of: ${PROVIDER_IDS.map((id) => PROVIDERS[id].label).join(', ')}.`);
+    throw new GatewayError(400, 'invalid_provider', `Unknown provider; use one of: ${PROVIDER_IDS.join(', ')}.`);
   }
   return provider;
 }
