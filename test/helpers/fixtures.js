@@ -14,6 +14,7 @@ export const ENV_KEYS = Object.freeze({
 });
 /** Unreachable upstreams (a closed port; https so production-mode configs accept them too): the default for every test, so nothing can reach a real provider. */
 export const OFFLINE_BASE_URLS = Object.freeze({
+  MORPH_BASE_URL: 'https://127.0.0.1:1',
   OPENAI_BASE_URL: 'https://127.0.0.1:1',
   ANTHROPIC_BASE_URL: 'https://127.0.0.1:1',
   GEMINI_BASE_URL: 'https://127.0.0.1:1',

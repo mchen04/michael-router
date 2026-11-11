@@ -10,7 +10,7 @@ implementation does and does not protect against.
 
 Assets, in order of value:
 
-1. **Provider API keys** (Anthropic, Gemini, OpenRouter, OpenAI). They spend the deployment owner's money.
+1. **Provider API keys** (Anthropic, Gemini, OpenRouter, OpenAI, Morph). They spend the deployment owner's money.
 2. **The user password.** Friends can send chat requests through the configured keys. Only the separate admin password grants control access.
 3. **Usage and event data** (models used, token counts, costs, client IPs of failed logins).
 
@@ -236,7 +236,9 @@ the fake providers and real dev-server processes:
 - **A provider key failure is 502 `provider_auth_failed`, never 401**, so a 401 always means the
   router password and clients do not rotate or re-prompt for the wrong credential.
 - **Bounded work per request**: bodies over 4 MiB are refused before parsing, the upstream request
-  has a 295 s total timeout, error bodies are read up to 64 KiB, and a client disconnect aborts
+  has a 295 s total timeout for explicit models. Automatic shares a 285 s budget from request
+  entry across all attempts and starts no step with less than 1 s left. Error bodies are read
+  up to 64 KiB, and a client disconnect aborts
   the upstream request (no tokens are spent on a response nobody reads).
 - **Usage recording** stores only counters per day, provider and model (token counts, costs) —
   never content. It runs in the background and never fails the request.
@@ -441,7 +443,7 @@ a checkout are not uploaded (`DEPLOY.md` step 5).
 not with its secrets. It holds: source ids (keyed HMACs of client addresses) with their limiter
 counts and end times; auth events with the display form of the failed-login source address,
 for the newest 200 events only; the provider key records as AES-256-GCM ciphertext; daily usage
-counts per provider and model; and the applied migration versions. It never holds the password,
+counts per provider and model; provider cooldown expiries and safe reason labels; and the applied migration versions. It never holds the password,
 its hash, `ROUTER_SECRET`, a provider key in plaintext, a prompt or a completion. Whoever can
 read the database learns usage, event metadata and failed-login addresses; whoever can write it
 can reset the limiter, delete or corrupt key overrides (a corrupt record makes that provider
@@ -472,7 +474,7 @@ not used (`DEPLOY.md` step 4.3). The migrate command removes them from its
 own environment (§9.4).
 
 **Least privilege.** The router runs no DDL: at request time it reads `schema_migrations` and
-reads and writes its four tables. After the migrations, the role in the deployment's URL needs
+reads and writes its five state tables. After the migrations, the role in the deployment's URL needs
 only `USAGE` on schema `michael_router` and `SELECT`, `INSERT`, `UPDATE`, `DELETE` on its tables;
 the role that owns the schema and runs `migrate.mjs` belongs with the operator. For example, with
 a separate runtime role:
@@ -486,7 +488,7 @@ REVOKE INSERT, UPDATE, DELETE ON michael_router.schema_migrations FROM <runtime 
 Re-run the grants after a migration adds a table. This repository does not create roles, and its
 tests run the store as the owning role.
 
-**Fail closed.** Any store error, a missing or outdated schema, a client not acquired within
+**Fail closed.** Required authentication store errors, a missing or outdated schema, a client not acquired within
 5000 ms or statements slower than 1500 ms → 503 `store_unavailable` before any password is
 evaluated (§3.4). Migrations never run at request time.
 
@@ -543,7 +545,7 @@ Each provider has one optional environment fallback key ending in `_API_KEY_2`.
 The primary key remains the encrypted store override or primary environment key.
 An undecryptable override stays unconfigured; fallback does not bypass that failure.
 Fallback keys undergo the same shape checks and redaction as primary keys.
-The copy script accepts all four fallback names through its existing scoped manifest flow.
+The copy script accepts all five fallback names through its existing scoped manifest flow.
 No fallback key is sent to clients or written to usage.
 Usage records only `key_slot_1_requests` or `key_slot_2_requests` for the final attempt.
 
@@ -551,7 +553,8 @@ Retry once for HTTP 401, 402, 403 or 429 with clear billing or exhausted-credit 
 The classifier accepts credit, billing, payment, balance, insufficient-quota, and exhausted, daily or monthly quota errors.
 It rejects plain rate limits, ambiguous quota errors, generic authentication failures, network errors and timeouts.
 The two attempts share a deadline, and the first error body remains internal.
-An event stream never retries, including errors before its first content event.
+This same-provider second-key retry never retries an event stream.
+Automatic selection has the separate first-byte boundary described below.
 
 ### Existing controls checked
 
@@ -602,3 +605,39 @@ The smoke script uses separate credential sources and verifies the user receives
 Login removes previous credentials before changing the saved URL.
 A failed configuration write cannot pair an old owner credential with a new host.
 The CLI test checks this failure path.
+
+
+## 13. Morph costs and automatic response boundary
+
+The Morph allowlist is exactly `morph-kimik31` and `morph-dsv41flash`, centralized in
+`MORPH_INCLUDED_MODELS`. Every other `morph-` name returns 400 before an upstream call,
+including suffixed variants that could bill per token. Ultra entitlement for both IDs is
+confirmed by the plan, live model list and owner-verified zero-cost calls.
+Morph Ultra supplies unmetered included usage, still subject to Morph rate and capacity limits.
+Zero marginal usage cost for those models excludes the subscription cost.
+Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
+
+`automatic` changes providers only for availability, rate or exhausted-quota errors before
+any response byte is written. Authentication, permission, context, invalid-request and safety
+errors stop the chain, as do all successful replies and normal safety refusals.
+The classifier examines all available error code, type and status signals so a general error
+cannot conceal a policy refusal. The normal second-key billing retry remains inside a step;
+no successful work is retried. Client disconnects do not trigger another provider call.
+
+For a stream, even a comment, role chunk or tool delta commits the response.
+An error after that byte emits the existing terminal error event and never restarts on another
+provider. The router executes no tools. Tools and tool results can move to a new provider only
+before commitment, and a tool call already streamed is never replayed by the router.
+Clients must treat incomplete streams as failed and decide separately whether a new request is appropriate.
+
+Provider cooldowns are shared store state containing only a provider name, expiry and safe
+reason. A concurrent shorter cooldown cannot replace a longer one. Valid retry delays are
+honored in full, with a 1 second minimum; absent or malformed values use 30 seconds. Extreme
+values are capped only at the largest end time JavaScript Date and the store can represent.
+An operator can clear a stuck cooldown by deleting that provider's row from
+`michael_router.provider_cooldowns`. Explicit requests are never blocked by cooldowns.
+Cooldown read and write errors fail open for automatic routing, so the cache cannot turn a
+healthy upstream into a failed request. Required authentication store operations still fail closed.
+A database writer can alter skip state and therefore which provider automatic selection tries;
+the database remains a trusted state boundary. Responses expose only fixed model and provider
+IDs and safe skip reasons, with the usual secret redaction.

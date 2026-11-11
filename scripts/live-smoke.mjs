@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Smoke run against a deployed Michael Router, after deployment (docs/DEPLOY.md step 6).
 //
-//   node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai]
+//   node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai,morph]
 //                               [--probe-wrong-password]
 //
 // The router password comes from MROUTER_PASSWORD, else from stdin (piped) or a hidden prompt.
@@ -355,7 +355,7 @@ function parseArgs(argv) {
 }
 
 const USAGE =
-  'usage: node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai] [--probe-wrong-password]\n' +
+  'usage: node scripts/live-smoke.mjs --url https://<host> [--out evidence/live/<stamp>.json] [--providers claude,gemini,openrouter,openai,morph] [--probe-wrong-password]\n' +
   'The user password is read from MROUTER_PASSWORD, else from stdin or a hidden prompt. Set MR_ADMIN_PASSWORD separately. --probe-wrong-password also sends one wrong\n' +
   'password (expects 401); it counts a failed attempt for this source.';
 

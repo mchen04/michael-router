@@ -69,6 +69,7 @@ test('set / list / unset over HTTP; records are AES-256-GCM ciphertext bound to 
       ['gemini', true, 'store'],
       ['openrouter', false, 'none'],
       ['openai', false, 'none'],
+      ['morph', false, 'none'],
     ],
   );
   assert.ok(!list.text.includes('SENTINEL'), 'list never returns values');

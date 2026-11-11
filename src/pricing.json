@@ -5,7 +5,8 @@
     "claude": "https://platform.claude.com/docs/en/about-claude/pricing (prices as of 2026-11-10)",
     "gemini": "https://ai.google.dev/gemini-api/docs/pricing (fetched 2026-10-21)",
     "openrouter": "provider-reported usage.cost",
-    "openai": "https://developers.openai.com/api/docs/pricing (Standard prices, including image generation, fetched 2026-10-29)"
+    "openai": "https://developers.openai.com/api/docs/pricing (Standard prices, including image generation, fetched 2026-10-29)",
+    "morph": "Morph Ultra entitlement confirmed by the plan, live model list and owner-verified zero-cost calls; unmetered included usage, still subject to Morph rate and capacity limits"
   },
   "defaults": {
     "cache_write_multiplier_claude": 1.25,
@@ -15,7 +16,8 @@
     "claude": "claude-haiku-5-5",
     "gemini": "gemini-3.5-flash-lite",
     "openrouter": "openrouter/free",
-    "openai": "gpt-6-luna"
+    "openai": "gpt-6-luna",
+    "morph": "morph-dsv41flash"
   },
   "models": {
     "claude-fable-5-2": {
@@ -589,6 +591,32 @@
       "text_output": null,
       "context_length": null,
       "max_output": null
+    },
+    "morph-kimik31": {
+      "provider": "morph",
+      "included": true,
+      "unmetered": true,
+      "note": "Zero marginal cost under Morph Ultra; unmetered included usage, still subject to Morph rate and capacity limits. Subscription cost is separate.",
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "context_length": 1000000,
+      "max_output": null,
+      "sampling": true
+    },
+    "morph-dsv41flash": {
+      "provider": "morph",
+      "included": true,
+      "unmetered": true,
+      "note": "Zero marginal cost under Morph Ultra; unmetered included usage, still subject to Morph rate and capacity limits. Subscription cost is separate.",
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "context_length": 1000000,
+      "max_output": null,
+      "sampling": true
     }
   }
 }

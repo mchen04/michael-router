@@ -187,6 +187,7 @@ export function createHandler(options = {}) {
       instance,
       cold: instance.requests++ === 0,
       t0: performance.now(),
+      startedAtMs: now(),
       timings: { auth: undefined, store: 0, upstream: undefined },
       route: null,
       source: null,

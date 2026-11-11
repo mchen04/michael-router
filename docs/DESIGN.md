@@ -5,7 +5,7 @@ Status: v1 interfaces.
 ## 1. What it is
 
 A private, password-protected, OpenAI-compatible HTTP gateway deployed on Vercel. A request's
-`model` name selects one of four upstream providers, called with the deployment owner's
+`model` name selects one of five upstream providers, called with the deployment owner's
 provider API keys:
 
 | Provider id  | What it is                          | Upstream and protocol                                           |
@@ -13,6 +13,7 @@ provider API keys:
 | `claude`     | Claude API (an Anthropic API key — never a Claude subscription) | native Messages API `POST https://api.anthropic.com/v1/messages` via the adapter in §5.5 |
 | `gemini`     | Gemini API (Google AI Studio key)   | pass-through to `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` (`Authorization: Bearer`) |
 | `openai` | OpenAI | pass-through to `https://api.openai.com/v1/chat/completions`, and `/v1/images/generations` for `gpt-image-*` (`Authorization: Bearer`) |
+| `morph` | Morph Ultra included models | pass-through to `https://api.morphllm.com/v1/chat/completions` (`Authorization: Bearer`) |
 | `openrouter` | OpenRouter                          | pass-through to `https://openrouter.ai/api/v1/chat/completions` (`Authorization: Bearer`) |
 
 Why Claude is not a pass-through: Anthropic's own OpenAI-compatibility layer is documented as
@@ -89,7 +90,7 @@ for Vercel, and benchmark tooling. There is no web login and no admin UI.
     end, wait end, block end, strikes and their end, inflight and its end, `expires_ms` = the
     latest end, indexed for the sweep; end times are epoch ms from the router's clock);
     `provider_keys (provider, record, updated_at)`; `usage_daily (day, provider, model, metric,
-    value bigint)`; `events (id identity, event json)` (`json` keeps the stored text exactly).
+    value bigint)`; `provider_cooldowns (provider, until_ms bigint, reason)`; `events (id identity, event json)` (`json` keeps the stored text exactly).
   - Migrations (`src/store/migrate.js`) run only from the operator's migrate command
     (`scripts/migrate.mjs`, §10.2), never at request time, and `src/store/migrate.js` is not
     uploaded with the deployment; `ping` (health) fails closed when the schema is missing or older than the code
@@ -172,10 +173,10 @@ gitignored `evidence/` directory or outside the repository; only summaries are c
 |------|----------|---------|
 | `ROUTER_PASSWORD_HASH` or `ROUTER_PASSWORD` | exactly one | The access password exists only as a Vercel sensitive environment variable — never in repository files, history, logs or command arguments. Preferred: `ROUTER_PASSWORD_HASH` = `scrypt$<logN>$<r>$<p>$<salt b64url>$<hash b64url>`, produced from stdin by `mrouter hash-password` or the copy script's `scrypt-hash` transform. Accepted: `ROUTER_PASSWORD` (the password itself, ≥ 12 characters), compared as HMAC digests with `timingSafeEqual`. Both set → 503 `server_misconfigured`. |
 | `ROUTER_SECRET` | yes | ≥32 random bytes, base64/base64url. HKDF-SHA256 derives the key-encryption key (`info="provider-keys-v1"`) and the source-id HMAC key (`info="source-id-v1"`). Never rotated by tooling (rotation orphans stored keys). |
-| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` `OPENAI_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
+| `ANTHROPIC_API_KEY` `GEMINI_API_KEY` `OPENROUTER_API_KEY` `OPENAI_API_KEY` `MORPH_API_KEY` | no | Env-provided provider keys. A CLI-set key stored in the store overrides the env key. |
 | `DATABASE_URL_POOLED` (preferred) or `DATABASE_URL` | yes, unless `ROUTER_STORE=memory` | PostgreSQL URL of the store (Neon: the `-pooler` endpoint for `DATABASE_URL_POOLED`). In production the URL must name its host, user and password, and `sslmode` must be `require`, `verify-ca` or `verify-full`; `channel_binding` may be `require`, `prefer` or `disable`; any other `ssl*` parameter or `uselibpqcompat` is refused (pg would let it override the TLS settings). A refused URL is reported as its variable's name; neither set → `DATABASE_URL_POOLED/DATABASE_URL`. Both values and the passwords in them are scrubbed from every output (§8). |
 | `ROUTER_STORE=memory` | dev/test only | Refused when `VERCEL` is set or `NODE_ENV=production`. |
-| `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` `OPENAI_BASE_URL` | no | Upstream origin overrides (tests/bench). |
+| `ANTHROPIC_BASE_URL` `GEMINI_BASE_URL` `OPENROUTER_BASE_URL` `OPENAI_BASE_URL` `MORPH_BASE_URL` | no | Upstream origin overrides (tests/bench). |
 | `TRUST_PROXY_HEADERS` | no | Take the client IP from `x-vercel-forwarded-for`, then `x-real-ip` (Vercel overwrites both; client-supplied values are not forwarded). Implied true when `VERCEL=1`; tests set it to simulate many sources. Otherwise the socket address is used. |
 | `AUTH_MAX_FAILURES` (8) `AUTH_WINDOW_SECONDS` (3600) `AUTH_BLOCK_SECONDS` (3600) `AUTH_MAX_INFLIGHT` (32) `AUTH_BACKOFF_BASE_MS` (250) `AUTH_BACKOFF_MAX_MS` (30000) | no | Limiter tunables; defaults in parentheses. |
 
@@ -261,13 +262,17 @@ committed row, so each request gets a distinct inflight and failure count.
 
 `model` must match `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`, else 400 `invalid_model`. First match:
 
-1. contains `/` → `openrouter`; require `:free` suffix or exactly `openrouter/free`, otherwise 400 `model_not_allowed`
-2. starts with `claude-` → `claude`
-3. starts with `gemini-` → `gemini`
-4. starts with `gpt-` or matches `^o\d` → `openai`
-5. otherwise → 400 `model_not_routable`
+1. exactly `automatic` → the ordered chain in `src/routing.js`, before explicit routing
+2. starts with `morph-` → `morph`; require membership in `MORPH_INCLUDED_MODELS`, otherwise 400 `model_not_allowed`
+3. contains `/` → `openrouter`; require `:free` suffix or exactly `openrouter/free`, otherwise 400 `model_not_allowed`
+4. starts with `claude-` → `claude`
+5. starts with `gemini-` → `gemini`
+6. starts with `gpt-` or matches `^o\d` → `openai`
+7. otherwise → 400 `model_not_routable`
 
-Selected provider without a key → 503 `provider_not_configured`.
+An explicit selected provider without a key returns 503 `provider_not_configured`.
+Automatic selection skips it. The Morph allowlist contains exactly `morph-kimik31` and
+`morph-dsv41flash`; no wildcard can reach a paid Morph model.
 
 ### 5.4 Forwarding (`src/proxy.js`, `src/providers/*`)
 
@@ -619,14 +624,15 @@ password, its hash, `ROUTER_SECRET`, a database URL with its password or a real 
 Each provider accepts an optional second environment key: its primary variable plus `_2`.
 Stored overrides remain slot 1; slot 2 remains environment-only.
 The provider stays unconfigured without a primary key or stored override.
-No database migration is needed.
+The second-key feature itself requires no migration; automatic cooldowns require migration 2 below.
 
 Retry one time for HTTP 401, 402, 403 or 429 with explicit billing or exhausted-credit evidence.
 The classifier accepts credit, billing, payment, balance, insufficient-quota, and exhausted, daily or monthly quota errors.
 Generic rate limits, ambiguous quota errors, invalid keys and network failures do not retry.
 Both attempts share one deadline and payload.
-A JSON-only error can trigger fallback before the response starts.
-An event stream never retries.
+A JSON-only billing error can trigger the second-key retry before the response starts.
+That same-provider retry never retries an event stream. Automatic selection can move to
+a different provider before its first output byte, as described below.
 Only the final attempt contributes usage; `key_slot_1_requests` or `key_slot_2_requests` identifies its slot.
 
 The shared authentication path covers every provider, key operation, state endpoint and function rewrite.
@@ -656,3 +662,65 @@ The shared limiter runs before either password verifier.
 A recognized user credential returns 403 `admin_required` on control routes without recording a password failure.
 A credential matching both roles stays user-only, so passwords must differ.
 The CLI stores its owner password separately and never falls back to the user password for control requests.
+
+
+## Morph and automatic selection
+
+`src/routing.js` owns the ordered chain and the table-driven `classifyFallback` function.
+The steps are `claude-opus-5-5`, `gpt-6.1-sol` and `morph-dsv41flash`, in that order.
+`src/proxy.js` uses the same single-provider attempt path for explicit and automatic calls.
+An automatic step is visited once, with the existing optional second-key billing retry inside
+that attempt. A success stops immediately. Failed upstream attempts retain error accounting;
+answering usage is recorded under the concrete provider and model.
+
+The classifier permits rate limits, exhausted billing or quota, availability and overload,
+and a network failure or timeout before commitment. It rejects invalid requests, context
+limits, authentication or permission failures and safety or policy refusals. It preserves all
+upstream error code, type and status signals so a general code cannot hide a terminal refusal.
+Successful refusals stop the chain. Native stream error types without numeric status share the
+same classification table as HTTP failures. Only explicit safety and context-length signals
+override availability; token-per-minute wording does not. Exact statuses and precedence are
+specified in `API.md` §2.1.
+
+Automatic has one absolute 285-second deadline from request entry, with at least 1 second
+remaining before starting a step. Each attempt gets only the remaining budget, including its
+stream and billing-key retry. This leaves 15 seconds below the Vercel invocation limit for
+final store work and response delivery. Exhaustion marks later steps `deadline_exhausted`
+and returns the aggregate unavailable error, or a gateway timeout if the final pre-fetch
+check exhausts the budget. Explicit requests keep their 295-second timeout.
+
+The streaming relay primes the response until its first output byte before returning it.
+A comment, role chunk or tool delta establishes the same boundary as content.
+Before that byte an eligible error can select the next step. After it, the existing terminal
+error event ends the stream without a restart or `[DONE]`.
+The router executes no tools. Tool declarations and tool results can move to another provider
+only before commitment, and a streamed tool call is never replayed by the router.
+The concrete model appears in the response body, chunks and `x-router-model`.
+`x-router-provider` identifies the answerer and `x-router-fallback` lists skipped steps.
+
+Cooldowns use provider scope because billing and availability usually affect an account or
+provider capacity across models. They live in PostgreSQL, shared by short-lived function
+instances, rather than module memory. Migration 2 adds only `provider_cooldowns`.
+`getCooldown(provider, nowMs)` reads active state; `setCooldown(provider, untilMs, reason)`
+atomically keeps the later expiry and its reason so concurrent writes cannot shorten a known outage.
+The memory store implements the same contract. Missing keys do not write cooldowns.
+Valid `Retry-After` seconds or IMF-fixdate HTTP dates are honored in full, with a 1 second
+minimum. Absent or malformed values use 30 seconds. Extreme values are capped only at the
+largest end time JavaScript Date and the store can represent: 8640000000000000 ms.
+Expiry restores the original chain order. An operator can clear a stuck cooldown by deleting
+that provider's row from `michael_router.provider_cooldowns`.
+Cooldown read and write errors are ignored, while authentication still fails closed.
+Explicit requests bypass cooldowns and have no automatic fallback.
+
+When no step answers, the error is 503 `all_providers_unavailable`, or 429 when every cause is
+a rate limit, including active cooldowns created by rate limits. `Retry-After` is the soonest
+known cooldown end in whole seconds rounded up, or 30 seconds if none is known.
+The message lists model steps and safe skip reasons. No key or upstream text enters this summary.
+
+Morph uses the OpenAI-compatible passthrough adapter, Bearer auth, `MORPH_API_KEY`, optional
+`MORPH_API_KEY_2` and `MORPH_BASE_URL`. It gets no added reasoning-effort default.
+The confirmed Ultra allowlist is `morph-kimik31` and `morph-dsv41flash`, centralized in `src/routing.js`.
+The catalogue marks its two models as included and unmetered with zero marginal usage cost,
+not an invented per-token rate. Ultra supplies unmetered included usage, still subject to Morph
+rate and capacity limits. Its subscription cost is separate.
+Group access being free does not make Claude or OpenAI calls free to Michael, the owner.

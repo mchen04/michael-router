@@ -12,8 +12,9 @@ export const PROVIDERS = Object.freeze({
   gemini: Object.freeze({ id: 'gemini', keyEnv: 'GEMINI_API_KEY', baseUrlEnv: 'GEMINI_BASE_URL', defaultBaseUrl: 'https://generativelanguage.googleapis.com' }),
   openrouter: Object.freeze({ id: 'openrouter', keyEnv: 'OPENROUTER_API_KEY', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultBaseUrl: 'https://openrouter.ai' }),
   openai: Object.freeze({ id: 'openai', keyEnv: 'OPENAI_API_KEY', baseUrlEnv: 'OPENAI_BASE_URL', defaultBaseUrl: 'https://api.openai.com' }),
+  morph: Object.freeze({ id: 'morph', keyEnv: 'MORPH_API_KEY', baseUrlEnv: 'MORPH_BASE_URL', defaultBaseUrl: 'https://api.morphllm.com' }),
 });
-/** @type {readonly ('openai' | 'claude' | 'gemini' | 'openrouter')[]} */
+/** @type {readonly ('openai' | 'claude' | 'gemini' | 'openrouter' | 'morph')[]} */
 export const PROVIDER_IDS = Object.freeze(/** @type {any} */ (Object.keys(PROVIDERS)));
 
 /** [env name, config field, default, min, max] */

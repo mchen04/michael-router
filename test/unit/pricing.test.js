@@ -31,9 +31,9 @@ test('Claude Fable 5.2 uses its request limits, sampling rules, price and model 
 
 test('pricing.json: dated, sourced per provider, every entry well-formed; smoke models are listed', () => {
   assert.match(PRICING.updated, /^\d{4}-\d{2}-\d{2}$/);
-  assert.deepEqual(Object.keys(PRICING.sources).sort(), ['claude', 'gemini', 'openai', 'openrouter']);
+  assert.deepEqual(Object.keys(PRICING.sources).sort(), ['claude', 'gemini', 'morph', 'openai', 'openrouter']);
   for (const [id, e] of Object.entries(PRICING.models)) {
-    assert.ok(['claude', 'gemini', 'openai', 'openrouter'].includes(e.provider), id);
+    assert.ok(['claude', 'gemini', 'morph', 'openai', 'openrouter'].includes(e.provider), id);
     if (e.priced === false) continue;
     for (const f of /** @type {const} */ (['input', 'output', 'cache_read', 'cache_write'])) {
       assert.ok(e[f] === null || (typeof e[f] === 'number' && e[f] >= 0), `${id}.${f}`);

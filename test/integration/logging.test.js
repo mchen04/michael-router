@@ -179,7 +179,7 @@ test('no secret or prompt reaches logs, events or the store across the whole API
     for (const secret of SECRETS()) assert.ok(!text.includes(secret), `${name} contains a secret`);
     assert.ok(!text.includes('SENTINEL'), `${name} contains a sentinel`);
   }
-  assert.deepEqual(Object.keys(tables), ['auth_sources', 'events', 'provider_keys', 'schema_migrations', 'usage_daily'], 'every table was dumped');
+  assert.deepEqual(Object.keys(tables), ['auth_sources', 'events', 'provider_cooldowns', 'provider_keys', 'schema_migrations', 'usage_daily'], 'every table was dumped');
   for (const table of ['auth_sources', 'events', 'provider_keys', 'usage_daily']) assert.ok(tables[table].length > 0, `${table} has rows`);
   for (const row of tables.provider_keys) {
     assert.deepEqual(Object.keys(JSON.parse(JSON.parse(row).record)).sort(), ['ct', 'iv', 'tag', 'updated_at', 'v'], 'records are ciphertext only');

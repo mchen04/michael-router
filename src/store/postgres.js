@@ -151,6 +151,12 @@ ON CONFLICT (provider) DO UPDATE SET record = excluded.record, updated_at = excl
 
   deleteProviderKey: 'DELETE FROM michael_router.provider_keys WHERE provider = $1',
 
+  getCooldown: 'SELECT until_ms, reason FROM michael_router.provider_cooldowns WHERE provider = $1 AND until_ms > $2',
+
+  setCooldown: `INSERT INTO michael_router.provider_cooldowns AS c (provider, until_ms, reason) VALUES ($1, $2, $3)
+ON CONFLICT (provider) DO UPDATE SET until_ms = excluded.until_ms, reason = excluded.reason
+WHERE excluded.until_ms >= c.until_ms`,
+
   addUsage: `WITH purge AS (
   DELETE FROM michael_router.usage_daily d
   WHERE (d.day, d.provider, d.model, d.metric) IN (
@@ -291,6 +297,15 @@ export function createPostgresStore(config, { onPool, max = POOL_MAX, statementT
     async deleteProviderKey(provider) {
       const r = await query(SQL.deleteProviderKey, [text(provider)]);
       return (r.rowCount ?? 0) > 0;
+    },
+
+    async getCooldown(provider, nowMs) {
+      const { rows } = await query(SQL.getCooldown, [text(provider), checkMs(nowMs)]);
+      return rows[0] ? { untilMs: int(rows[0].until_ms), reason: text(rows[0].reason) } : null;
+    },
+
+    async setCooldown(provider, untilMs, reason) {
+      await query(SQL.setCooldown, [text(provider), checkMs(untilMs), text(reason)]);
     },
 
     async addUsage(day, entries, { retainFromDay }) {

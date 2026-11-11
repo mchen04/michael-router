@@ -91,7 +91,7 @@ test('a fresh database: the plan exits 4 and creates nothing, --apply exits 0, t
   const input = `# database\nexport DATABASE_URL="${url}"\n`;
   const pending = await runMigrate([], input);
   assert.equal(pending.code, EXIT.PENDING, pending.stdout + pending.stderr);
-  assert.deepEqual(lines(pending.stdout), plan(['Schema michael_router: does not exist', 'Applied migrations: none', 'Pending migrations: 1 (initial schema)', 'Refusal: none', 'Pending: run again with --apply to apply them.']));
+  assert.deepEqual(lines(pending.stdout), plan(['Schema michael_router: does not exist', 'Applied migrations: none', 'Pending migrations: 1 (initial schema), 2 (provider cooldowns)', 'Refusal: none', 'Pending: run again with --apply to apply them.']));
   const created = await withClient(url, async (c) =>
     (await c.query("SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')")).rows[0].n
     + (await c.query("SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = 'michael_router'")).rows[0].n);
@@ -100,12 +100,12 @@ test('a fresh database: the plan exits 4 and creates nothing, --apply exits 0, t
   // PG* variables are ignored: with this one honored, every transaction would be read-only.
   const applied = await runMigrate(['--apply'], input, { PGOPTIONS: '-c default_transaction_read_only=on' });
   assert.equal(applied.code, EXIT.OK, applied.stdout + applied.stderr);
-  assert.deepEqual(lines(applied.stdout), ['Applied migration 1 (initial schema)', ...plan(['Schema michael_router: exists', 'Applied migrations: 1', 'Pending migrations: none', 'Refusal: none', 'Up to date.'])]);
+  assert.deepEqual(lines(applied.stdout), ['Applied migration 1 (initial schema)', 'Applied migration 2 (provider cooldowns)', ...plan(['Schema michael_router: exists', 'Applied migrations: 1, 2', 'Pending migrations: none', 'Refusal: none', 'Up to date.'])]);
 
   for (const args of [[], ['--apply']]) {
     const again = await runMigrate(args, input);
     assert.equal(again.code, EXIT.OK, again.stdout + again.stderr);
-    assert.match(again.stdout, /^Applied migrations: 1\nPending migrations: none\nRefusal: none\nUp to date\.$/m);
+    assert.match(again.stdout, /^Applied migrations: 1, 2\nPending migrations: none\nRefusal: none\nUp to date\.$/m);
     if (args.length) assert.match(again.stdout, /^Nothing to apply\.$/m);
   }
   for (const r of [pending, applied]) assertNoUrlPart(r, [url]);
@@ -126,7 +126,7 @@ test('stdin forms: a dotenv document (--var picks the variable, quotes and comme
   for (const [args, input, code] of cases) {
     const r = await runMigrate(args, input);
     assert.equal(r.code, code, `${args.join(' ')}: ${r.stdout}${r.stderr}`);
-    if (code === EXIT.PENDING) assert.match(r.stdout, /^Pending migrations: 1 \(initial schema\)$/m);
+    if (code === EXIT.PENDING) assert.match(r.stdout, /^Pending migrations: 1 \(initial schema\), 2 \(provider cooldowns\)$/m);
     assertNoUrlPart(r, [url, nowhere]);
   }
 });

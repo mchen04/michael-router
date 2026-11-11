@@ -183,6 +183,37 @@ const CASES = [
     },
   ],
   [
+    'cooldowns: provider isolation, exact expiry, concurrent maximum and literal strings',
+    async ({ store }) => {
+      assert.equal(await store.getCooldown('claude', T0), null);
+      await store.setCooldown('claude', T0 + 1000, 'rate_limited');
+      await store.setCooldown('openai', T0 + 2000, 'unavailable');
+      assert.deepEqual(await store.getCooldown('claude', T0), { untilMs: T0 + 1000, reason: 'rate_limited' });
+      assert.deepEqual(await store.getCooldown('openai', T0), { untilMs: T0 + 2000, reason: 'unavailable' });
+      assert.equal(await store.getCooldown('morph', T0), null);
+      assert.deepEqual(await store.getCooldown('claude', T0 + 999), { untilMs: T0 + 1000, reason: 'rate_limited' });
+      assert.equal(await store.getCooldown('claude', T0 + 1000), null);
+      await Promise.all([5000, 3000, 9000, 7000].map((ms) => store.setCooldown('claude', T0 + ms, `reason-${ms}`)));
+      assert.deepEqual(await store.getCooldown('claude', T0), { untilMs: T0 + 9000, reason: 'reason-9000' });
+      await store.setCooldown('claude', T0 + 2000, 'shorter');
+      assert.deepEqual(await store.getCooldown('claude', T0), { untilMs: T0 + 9000, reason: 'reason-9000' });
+      assert.equal(await store.getCooldown('claude', T0 + 9000), null);
+      await store.setCooldown('claude', T0 + 10_000, 'recovered');
+      assert.deepEqual(await store.getCooldown('claude', T0 + 9000), { untilMs: T0 + 10_000, reason: 'recovered' });
+      await Promise.all([8_640_000_000_000_000, T0 + 2000].map((until) => store.setCooldown('morph', until, 'unavailable')));
+      assert.deepEqual(await store.getCooldown('morph', T0), { untilMs: 8_640_000_000_000_000, reason: 'unavailable' });
+      const hostile = "'); DROP TABLE michael_router.events; --";
+      await store.setCooldown(hostile, T0 + 500, hostile);
+      assert.deepEqual(await store.getCooldown(hostile, T0), { untilMs: T0 + 500, reason: hostile });
+      for (const bad of [NaN, Infinity, 1.5, 2 ** 53, '1', null]) {
+        await assert.rejects(store.getCooldown('claude', bad));
+        await assert.rejects(store.setCooldown('claude', bad, 'bad'));
+      }
+      await assert.rejects(store.getCooldown(null, T0));
+      await assert.rejects(store.setCooldown('claude', T0, null));
+    },
+  ],
+  [
     'usage: entries add up exactly (repeats within one call too), ranges are inclusive, and days before retainFromDay are purged',
     async ({ store }) => {
       const e = (/** @type {string} */ metric, /** @type {number} */ value, model = 'claude-haiku-5-5') => ({ provider: 'claude', model, metric, value });

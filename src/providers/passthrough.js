@@ -164,10 +164,10 @@ export function usageFor(provider, raw) {
  * is read from any chunk that carries it, and a chunk with a top-level `error` ends the stream.
  * Usage is final once `[DONE]` arrived, or when it came on a chunk with a `finish_reason` or on
  * the usage-only chunk; usage seen earlier in a stream that then broke is partial.
- * @param {{stripUsageOnly: boolean, normalize?: PassthroughProvider['usage']}} options
+ * @param {{stripUsageOnly: boolean, normalize?: PassthroughProvider['usage'], model?: string}} options
  *   stripUsageOnly: drop the usage-only chunk (`choices: []`) the client did not ask for
  */
-export function createRelay({ stripUsageOnly, normalize = normalizeUsage }) {
+export function createRelay({ stripUsageOnly, normalize = normalizeUsage, model }) {
   /** @type {import('../pricing.js').Usage | null} */
   let usage = null;
   let finalChunk = false;
@@ -203,7 +203,13 @@ export function createRelay({ stripUsageOnly, normalize = normalizeUsage }) {
         finalChunk = usageOnly || (Array.isArray(json.choices) && json.choices.some((c) => isObject(c) && c.finish_reason != null));
       }
       if (stripUsageOnly && usageOnly && json.usage) return {};
+      if (model && isObject(json)) item = { ...item, data: JSON.stringify({ ...json, model }) };
       return { out: serializeEvent(item) };
     },
   };
 }
+
+export const morph = {
+  ...openai,
+  prepare: prepareChat,
+};

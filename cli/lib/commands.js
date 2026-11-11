@@ -49,7 +49,7 @@ function providerArg(ctx, secretContext) {
   if (secretContext && (extra.length || !(known || SAFE_WORD.test(provider)))) throw usageError(KEY_ARGUMENT_REFUSAL);
   if (!known) throw usageError(`unknown provider${SAFE_WORD.test(provider) ? ` "${provider}"` : ''}; use one of: ${PROVIDER_IDS.join(', ')}`);
   if (extra.length) throw usageError(`${verb} takes exactly one provider`);
-  return /** @type {'claude' | 'gemini' | 'openrouter' | 'openai'} */ (provider);
+  return /** @type {'claude' | 'gemini' | 'openrouter' | 'openai' | 'morph'} */ (provider);
 }
 
 /** @param {Context} ctx @param {string} message */
@@ -374,7 +374,7 @@ async function ask(ctx) {
       const content = typeof message.content === 'string' ? forStdout(message.content) : '';
       ctx.stdout.write(content.endsWith('\n') || content === '' ? content : `${content}\n`);
     }
-    footer(ctx, provider, model, requestCost(provider, model, json?.usage), { ttfbMs, totalMs, servedModel: json?.model, finish: json?.choices?.[0]?.finish_reason });
+    footer(ctx, provider, model, requestCost(provider, model === 'automatic' ? json?.model ?? model : model, json?.usage), { ttfbMs, totalMs, servedModel: json?.model, finish: json?.choices?.[0]?.finish_reason });
     return;
   }
 
@@ -412,7 +412,7 @@ async function ask(ctx) {
   const failure = streamFailure(r, provider);
   if (failure) throw failure;
   if (ctx.json) ctx.printJson(r.response);
-  footer(ctx, provider, model, requestCost(provider, model, r.response.usage), { ...r, servedModel: r.response.model, finish: r.response.choices[0].finish_reason });
+  footer(ctx, provider, model, requestCost(provider, model === 'automatic' ? r.response.model ?? model : model, r.response.usage), { ...r, servedModel: r.response.model, finish: r.response.choices[0].finish_reason });
 }
 
 /** @param {Context} ctx */
@@ -634,7 +634,7 @@ export const COMMANDS = {
       list: { summary: 'Provider, configured, source (store/env/none), last update', usage: 'keys list', run: keysList },
       set: {
         summary: 'Store a provider key on the router and verify it',
-        usage: 'keys set <claude|gemini|openrouter|openai> [--no-verify]',
+        usage: 'keys set <claude|gemini|openrouter|openai|morph> [--no-verify]',
         synopsis: 'keys set <provider>',
         description:
           "Reads the key from a hidden prompt, or from stdin when piped. Keys are never accepted as\n" +
@@ -647,7 +647,7 @@ export const COMMANDS = {
       },
       unset: {
         summary: 'Remove a stored key (the environment key applies again)',
-        usage: 'keys unset <claude|gemini|openrouter|openai>',
+        usage: 'keys unset <claude|gemini|openrouter|openai|morph>',
         synopsis: 'keys unset <provider>',
         examples: ['mrouter keys unset openrouter'],
         run: keysUnset,
@@ -699,7 +699,7 @@ export const COMMANDS = {
   },
   test: {
     summary: 'One non-streaming and one streaming request per provider',
-    usage: 'test [claude|gemini|openrouter|openai...] [-m MODEL]',
+    usage: 'test [claude|gemini|openrouter|openai|morph...] [-m MODEL]',
     synopsis: 'test [provider...]',
     description:
       'Without providers, tests every provider the router has a key for, each with its cheap\n' +
