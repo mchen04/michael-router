@@ -667,7 +667,7 @@ The CLI stores its owner password separately and never falls back to the user pa
 ## Included models and automatic selection
 
 `src/routing.js` owns the ordered chain and the table-driven `classifyFallback` function.
-The steps are `claude-opus-5-5`, `gpt-6.1-sol` and `deepseek-v4.1-flash`, in that order.
+The steps are `claude-opus-5-5`, `gpt-6-astra` and `deepseek-v4.1-flash`, in that order.
 `src/proxy.js` uses the same single-provider attempt path for explicit and automatic calls.
 An automatic step is visited once, with the existing optional second-key billing retry inside
 that attempt. A success stops immediately. Failed upstream attempts retain error accounting;

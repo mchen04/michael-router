@@ -380,7 +380,7 @@ The existing `hash-password` command emits a hash valid for either server passwo
 `mrouter test included` uses `deepseek-v4.1-flash` for its plain and streaming checks.
 Use `kimi-k3.1-pro` or `deepseek-v4.1-flash` for the included models.
 
-Use `mrouter ask -m automatic` for Claude Opus 5.5, then GPT-6.1, then the DeepSeek included model.
+Use `mrouter ask -m automatic` for Claude Opus 5.5, then GPT-6 Astra, then the DeepSeek included model.
 Only an availability, rate or exhausted-quota error can advance the chain, and only before
 the first response byte. Missing keys and active shared cooldowns are skipped.
 Invalid requests, authentication and permission errors, context limits, safety refusals and

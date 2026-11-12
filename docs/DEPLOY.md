@@ -572,7 +572,7 @@ Included models: zero marginal cost under a separate subscription plan, unmetere
 The table records zero marginal usage cost for these two IDs and a separate subscription note.
 Group access being free does not make Claude or OpenAI calls free to Michael, the owner.
 
-`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `deepseek-v4.1-flash`.
+`automatic` tries `claude-opus-5-5`, then `gpt-6-astra`, then `deepseek-v4.1-flash`.
 Missing keys and active provider cooldowns are skipped. Only availability, rate and quota
 failures can advance the chain, and only before the first response byte. Requests with tools
 follow the same boundary; the router executes no tools and never replays a streamed tool call.

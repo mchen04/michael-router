@@ -6,7 +6,7 @@ import { createMemoryStore } from '../../src/store/memory.js';
 
 const STEPS = [
   ['claude', 'claude-opus-5-5', 'ANTHROPIC_API_KEY'],
-  ['openai', 'gpt-6.1-sol', 'OPENAI_API_KEY'],
+  ['openai', 'gpt-6-astra', 'OPENAI_API_KEY'],
   ['morph', 'deepseek-v4.1-flash', 'MORPH_API_KEY'],
 ];
 const KEYS = Object.fromEntries(STEPS.map(([p, , key]) => [key, `fake-SENTINEL-${p}-key-12345`]));
@@ -46,15 +46,15 @@ for (const [name, response, reason] of FALLBACKS) {
     const { h, calls } = await setup(t, (call) => call.provider === 'claude' ? response(call) : ok(call.provider));
     const r = await post(h);
     assert.equal(r.status, 200);
-    assert.equal(r.json.model, 'gpt-6.1-sol');
-    assert.equal(r.headers.get('x-router-model'), 'gpt-6.1-sol');
+    assert.equal(r.json.model, 'gpt-6-astra');
+    assert.equal(r.headers.get('x-router-model'), 'gpt-6-astra');
     assert.equal(r.headers.get('x-router-provider'), 'openai');
     assert.equal(r.headers.get('x-router-fallback'), `claude:${reason}`);
-    assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6.1-sol']);
+    assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6-astra']);
     await h.settle();
     const usage = (await h.call('/control/usage?days=1', { headers: bearer() })).json.models;
     assert.equal(usage.find((row) => row.model === 'claude-opus-5-5').errors, 1);
-    assert.equal(usage.find((row) => row.model === 'gpt-6.1-sol').requests, 1);
+    assert.equal(usage.find((row) => row.model === 'gpt-6-astra').requests, 1);
   });
 }
 
@@ -117,7 +117,7 @@ for (const [name, status, respond, retryAfter] of [
     assert.doesNotMatch(r.text, /morph/i);
     assert.equal(r.headers.get('retry-after'), retryAfter);
     for (const [, model] of STEPS) assert.ok(r.json.error.message.includes(model));
-    assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6.1-sol', 'morph-dsv41flash']);
+    assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6-astra', 'morph-dsv41flash']);
     const repeated = await post(h);
     assert.equal(repeated.status, status);
     assert.equal(repeated.headers.get('retry-after'), retryAfter);
@@ -132,7 +132,7 @@ test('cooldowns share state across handlers, bypass explicit requests and recove
   const store = createMemoryStore();
   let healthy = false;
   const { h, calls } = await setup(t, (call) => call.provider === 'claude' && !healthy ? error(503) : ok(call.provider), { clock, store });
-  assert.equal((await post(h)).json.model, 'gpt-6.1-sol');
+  assert.equal((await post(h)).json.model, 'gpt-6-astra');
   healthy = true;
   const other = await makeHarness({ clock, store, env: KEYS });
   assert.equal((await post(other)).headers.get('x-router-fallback'), 'claude:cooldown');
@@ -149,7 +149,7 @@ test('cooldown read and write failures cannot fail a healthy fallback answer', a
   store.getCooldown = async () => { throw new Error('store down'); };
   store.setCooldown = async () => { throw new Error('store down'); };
   const { h, calls } = await setup(t, (call) => call.provider === 'claude' ? error(503) : ok(call.provider), { store });
-  assert.equal((await post(h)).json.model, 'gpt-6.1-sol');
+  assert.equal((await post(h)).json.model, 'gpt-6-astra');
   assert.deepEqual(calls.map((call) => call.provider), ['claude', 'openai']);
   await h.settle();
 });
@@ -200,7 +200,7 @@ test('missing keys make no upstream call and do not shorten known cooldowns', as
 
 test('automatic finishes the second billing-key retry before selecting another provider', async (t) => {
   const { h, calls } = await setup(t, (call) => call.provider === 'claude' ? error(401, 'billing_error', 'Account credit exhausted') : ok(call.provider), { env: { ANTHROPIC_API_KEY_2: 'fake-SENTINEL-secondary-12345' } });
-  assert.equal((await post(h)).json.model, 'gpt-6.1-sol');
+  assert.equal((await post(h)).json.model, 'gpt-6-astra');
   assert.deepEqual(calls.map((call) => call.provider), ['claude', 'claude', 'openai']);
   assert.notEqual(calls[0].headers['x-api-key'], calls[1].headers['x-api-key']);
   await h.settle();
@@ -243,6 +243,19 @@ test('explicit models never fall back and Morph variants are refused before any 
   await h.settle();
 });
 
+for (const status of [200, 429]) {
+  test(`explicit gpt-6.1-sol keeps its OpenAI route without fallback on ${status}`, async (t) => {
+    const { h, calls } = await setup(t, (call) => status === 200 ? ok(call.provider) : error(status));
+    const r = await post(h, { model: 'gpt-6.1-sol' });
+    assert.equal(r.status, status);
+    assert.equal(r.headers.get('x-router-provider'), 'openai');
+    assert.equal(r.headers.get('x-router-model'), 'gpt-6.1-sol');
+    assert.equal(r.headers.get('x-router-fallback'), null);
+    assert.deepEqual(calls.map((call) => call.model), ['gpt-6.1-sol']);
+    await h.settle();
+  });
+}
+
 test('models exposes both 1,000,000-token Morph contexts and automatic order', async (t) => {
   const { h } = await setup(t, () => { throw new Error('Catalogue must not call upstream'); });
   const r = await h.call('/v1/models', { headers: bearer() });
@@ -252,7 +265,7 @@ test('models exposes both 1,000,000-token Morph contexts and automatic order', a
     assert.equal(entry.owned_by, 'included');
   }
   assert.doesNotMatch(r.text, /morph/i);
-  assert.match(r.json.data.find((entry) => entry.id === 'automatic').description, /claude-opus-5-5 then gpt-6.1-sol then deepseek-v4.1-flash/);
+  assert.match(r.json.data.find((entry) => entry.id === 'automatic').description, /claude-opus-5-5 then gpt-6-astra then deepseek-v4.1-flash/);
 });
 
 test('a pre-commit stream failure selects the next provider and reports its model in chunks and headers', async (t) => {
@@ -262,11 +275,11 @@ test('a pre-commit stream failure selects the next provider and reports its mode
   const r = await post(h, { stream: true });
   assert.equal(r.status, 200);
   assert.equal(r.headers.get('x-router-provider'), 'openai');
-  assert.equal(r.headers.get('x-router-model'), 'gpt-6.1-sol');
+  assert.equal(r.headers.get('x-router-model'), 'gpt-6-astra');
   assert.equal(r.headers.get('x-router-fallback'), 'claude:unavailable');
   const chunks = r.text.split('\n').filter((line) => line.startsWith('data: {')).map((line) => JSON.parse(line.slice(6)));
   assert.ok(chunks.length > 0);
-  assert.ok(chunks.every((item) => item.model === 'gpt-6.1-sol'));
+  assert.ok(chunks.every((item) => item.model === 'gpt-6-astra'));
   assert.ok(r.text.includes('[DONE]'));
   assert.deepEqual(calls.map((call) => call.provider), ['claude', 'openai']);
   await h.settle();
@@ -287,7 +300,7 @@ for (const tools of [false, true]) {
     assert.ok(r.text.includes(tools ? 'tool_calls' : 'first'));
     assert.ok(r.text.includes('upstream_stream_incomplete'));
     assert.ok(!r.text.includes('[DONE]'));
-    assert.equal(r.headers.get('x-router-model'), 'gpt-6.1-sol');
+    assert.equal(r.headers.get('x-router-model'), 'gpt-6-astra');
     assert.deepEqual(calls.map((call) => call.provider), ['claude', 'openai']);
     await h.settle();
   });
@@ -335,7 +348,7 @@ test('automatic reaches Morph in order and streams its concrete model', async (t
   assert.equal(r.headers.get('x-router-provider'), 'morph');
   assert.equal(r.headers.get('x-router-fallback'), 'claude:unavailable,openai:unavailable');
   assert.ok(r.text.includes('"model":"deepseek-v4.1-flash"'));
-  assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6.1-sol', 'morph-dsv41flash']);
+  assert.deepEqual(calls.map((call) => call.model), ['claude-opus-5-5', 'gpt-6-astra', 'morph-dsv41flash']);
   await h.settle();
 });
 
@@ -429,7 +442,7 @@ test('multiline JSON stream events carry the concrete model for explicit Morph a
 test('token-per-minute wording is a rate limit rather than a context-length error', async (t) => {
   const { h, calls } = await setup(t, (call) => call.provider === 'claude' ? error(429, 'rate_limit_error', 'too many tokens per minute') : ok(call.provider));
   const r = await post(h);
-  assert.equal(r.json.model, 'gpt-6.1-sol');
+  assert.equal(r.json.model, 'gpt-6-astra');
   assert.equal(r.headers.get('x-router-fallback'), 'claude:rate_limited');
   assert.deepEqual(calls.map((call) => call.provider), ['claude', 'openai']);
   await h.settle();

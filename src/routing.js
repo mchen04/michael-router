@@ -64,7 +64,7 @@ export function routeImageModel(name) {
 
 export const AUTOMATIC_CHAIN = Object.freeze([
   Object.freeze({ provider: 'claude', model: 'claude-opus-5-5' }),
-  Object.freeze({ provider: 'openai', model: 'gpt-6.1-sol' }),
+  Object.freeze({ provider: 'openai', model: 'gpt-6-astra' }),
   Object.freeze({ provider: 'morph', model: 'deepseek-v4.1-flash' }),
 ]);
 

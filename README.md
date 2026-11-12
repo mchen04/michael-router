@@ -18,7 +18,7 @@ The first matching rule wins:
 
 | `model` | Provider |
 |---------|----------|
-| exactly `automatic` | Claude Opus 5.5, then GPT-6.1, then the DeepSeek included model, only on availability, rate or quota failure |
+| exactly `automatic` | Claude Opus 5.5, then GPT-6 Astra, then the DeepSeek included model, only on availability, rate or quota failure |
 | exactly `kimi-k3.1-pro` or `deepseek-v4.1-flash` | Included models |
 | contains `/` (for example `openrouter/free`) | OpenRouter, name forwarded unchanged |
 | starts with `claude-` | Claude, translated to the Anthropic Messages API |
@@ -30,7 +30,7 @@ OpenRouter accepts only names ending in `:free` and `openrouter/free`.
 Paid models, model fallbacks, routing overrides, presets and plugins return 400 before any upstream call.
 The router also sets a zero-price provider guard.
 
-`automatic` tries `claude-opus-5-5`, `gpt-6.1-sol`, then `deepseek-v4.1-flash` in that order.
+`automatic` tries `claude-opus-5-5`, `gpt-6-astra`, then `deepseek-v4.1-flash` in that order.
 It skips missing keys and shared provider cooldowns. Invalid requests, authentication errors,
 context limits, safety refusals and successful replies stop the chain.
 Fallback stops at the first byte written to the client, including streamed tool calls.
