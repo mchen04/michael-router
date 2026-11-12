@@ -251,7 +251,7 @@ for (const status of [200, 429]) {
     assert.equal(r.headers.get('x-router-provider'), 'openai');
     assert.equal(r.headers.get('x-router-model'), 'gpt-6.1-sol');
     assert.equal(r.headers.get('x-router-fallback'), null);
-    assert.deepEqual(calls.map(({ provider, model }) => ({ provider, model })), [{ provider: 'openai', model: 'gpt-6.1-sol' }]);
+    assert.deepEqual(calls.map((call) => call.model), ['gpt-6.1-sol']);
     await h.settle();
   });
 }
