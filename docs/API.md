@@ -93,7 +93,7 @@ lists the models the gateway has metadata and prices for.
 `model: "automatic"` uses this ordered chain, defined once in `src/routing.js`:
 
 1. `claude-opus-5-5` on `claude`.
-2. `gpt-6.1-sol` on `openai`.
+2. `gpt-6-astra` on `openai`.
 3. `deepseek-v4.1-flash` on `included`.
 
 A provider without a configured primary key or stored override is skipped.
@@ -167,7 +167,7 @@ The error message lists all model steps and safe skip reasons without keys or up
 When no cooldown is known, it is 30 seconds. Missing-key skips do not shorten real cooldowns.
 
 ```json
-{"error":{"message":"All automatic steps unavailable: claude-opus-5-5 (claude:rate_limited), gpt-6.1-sol (openai:cooldown), deepseek-v4.1-flash (included:not_configured).","type":"gateway_error","code":"all_providers_unavailable"}}
+{"error":{"message":"All automatic steps unavailable: claude-opus-5-5 (claude:rate_limited), gpt-6-astra (openai:cooldown), deepseek-v4.1-flash (included:not_configured).","type":"gateway_error","code":"all_providers_unavailable"}}
 ```
 
 For example, after setting the usual client environment locally:

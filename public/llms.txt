@@ -12,7 +12,7 @@ Effort defaults to medium for Claude, OpenAI, and Gemini.
 Set `"reasoning_effort": "low" | "medium" | "high"` to change it; higher costs more.
 OpenRouter and the included models keep their own defaults.
 Included models use exactly `kimi-k3.1-pro` and `deepseek-v4.1-flash`.
-`automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `deepseek-v4.1-flash` only for availability, rate or quota failure.
+`automatic` tries `claude-opus-5-5`, then `gpt-6-astra`, then `deepseek-v4.1-flash` only for availability, rate or quota failure.
 It skips missing keys and shared provider cooldowns. Explicit models have no fallback and bypass cooldowns.
 Invalid requests, authentication, permission, context limits, safety refusals and successful replies stop the chain.
 Fallback ends at the first client byte, including comments, role chunks and tool calls.

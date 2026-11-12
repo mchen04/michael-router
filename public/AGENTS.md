@@ -13,7 +13,7 @@ Do not call the Responses API or native Anthropic Messages API.
 
 Use these recommended defaults:
 
-- Automatic: `automatic` tries `claude-opus-5-5`, then `gpt-6.1-sol`, then `deepseek-v4.1-flash` only for availability, rate or quota failure.
+- Automatic: `automatic` tries `claude-opus-5-5`, then `gpt-6-astra`, then `deepseek-v4.1-flash` only for availability, rate or quota failure.
 - Included models: exactly `kimi-k3.1-pro` or `deepseek-v4.1-flash`.
 - Claude: `claude-opus-5-5`. Names start with `claude-`.
 - OpenAI: `gpt-6.1-sol`. Names start with `gpt-`, or use `o3`.
